@@ -1,0 +1,16 @@
+version: "3.9"
+
+# Production variant: no bind-mounted source, runs `next build` + `next
+# start` instead of dev mode. Point DATABASE_URL/REDIS_URL/NEXTAUTH_SECRET
+# at your real infrastructure via a real .env file or your orchestrator's
+# secret manager — do not reuse the dev defaults below.
+
+services:
+  web:
+    build: .
+    restart: always
+    command: sh -c "npx prisma migrate deploy && npm run build && npm run start"
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env
