@@ -43,7 +43,8 @@ export const STANDARD_COPPER_BAR_SIZES_MM = [
 
 export function calculateBusbar(input: BusbarInput): BusbarOutput {
   if (input.ratedCurrentA <= 0) throw new Error("ratedCurrentA must be > 0");
-  if (input.currentDensityAPerMm2 <= 0) throw new Error("currentDensityAPerMm2 must be > 0");
+  if (input.currentDensityAPerMm2 <= 0)
+    throw new Error("currentDensityAPerMm2 must be > 0");
   if (input.numberOfBars <= 0) throw new Error("numberOfBars must be > 0");
 
   // Current is assumed to be shared equally across parallel bars.
@@ -66,7 +67,9 @@ export function calculateBusbar(input: BusbarInput): BusbarOutput {
 
 /** Suggests the smallest standard bar size whose area >= requiredAreaMm2. */
 export function suggestStandardBarSize(requiredAreaMm2: number) {
-  const sorted = [...STANDARD_COPPER_BAR_SIZES_MM].sort((a, b) => a.width * a.thickness - b.width * b.thickness);
+  const sorted = [...STANDARD_COPPER_BAR_SIZES_MM].sort(
+    (a, b) => a.width * a.thickness - b.width * b.thickness,
+  );
   return sorted.find((s) => s.width * s.thickness >= requiredAreaMm2) ?? null;
 }
 

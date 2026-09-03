@@ -11,21 +11,23 @@ import { requirePermission } from "@/lib/auth/apiGuard";
  * extension of this route — not built out in this pass.
  */
 export async function GET(req: NextRequest) {
-  const guard = await requirePermission("boq.view");
+  const guard = await requirePermission("pricing.view");
   if (guard.error) return guard.error;
 
   const { searchParams } = new URL(req.url);
   const panelId = searchParams.get("panelId");
-  if (!panelId) return NextResponse.json({ error: "panelId is required" }, { status: 400 });
+  if (!panelId)
+    return NextResponse.json({ error: "panelId is required" }, { status: 400 });
 
   const panel = await prisma.panel.findUnique({
     where: { id: panelId },
     include: { components: { include: { component: true } }, project: true },
   });
-  if (!panel) return NextResponse.json({ error: "Panel not found" }, { status: 404 });
+  if (!panel)
+    return NextResponse.json({ error: "Panel not found" }, { status: 404 });
 
   const workbook = new ExcelJS.Workbook();
-  workbook.creator = "Electrical Tendering Platform";
+  workbook.creator = "E-SOLUTIONS";
   const sheet = workbook.addWorksheet("Panel BOM");
 
   sheet.columns = [
@@ -42,7 +44,9 @@ export async function GET(req: NextRequest) {
   sheet.views = [{ state: "frozen", ySplit: 1 }];
 
   panel.components.forEach((pc, idx) => {
-    const listPrice = pc.component.listPrice ? Number(pc.component.listPrice) : 0;
+    const listPrice = pc.component.listPrice
+      ? Number(pc.component.listPrice)
+      : 0;
     sheet.addRow({
       line: idx + 1,
       manufacturer: pc.component.manufacturer,
@@ -60,7 +64,8 @@ export async function GET(req: NextRequest) {
   const buffer = await workbook.xlsx.writeBuffer();
   return new NextResponse(buffer, {
     headers: {
-      "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "Content-Type":
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
       "Content-Disposition": `attachment; filename="${panel.code}-BOM.xlsx"`,
     },
   });

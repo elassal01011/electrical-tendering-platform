@@ -1,10 +1,11 @@
 import type { NextAuthOptions } from "next-auth";
 import CredentialsProvider from "next-auth/providers/credentials";
 import bcrypt from "bcryptjs";
+import { createHash } from "node:crypto";
 import { prisma } from "@/lib/db/prisma";
 
 export const authOptions: NextAuthOptions = {
-  session: { strategy: "jwt" },
+  session: { strategy: "jwt", maxAge: 8 * 60 * 60 },
   pages: { signIn: "/login" },
   providers: [
     CredentialsProvider({
@@ -14,19 +15,37 @@ export const authOptions: NextAuthOptions = {
         password: { label: "Password", type: "password" },
       },
       async authorize(credentials) {
-        if (!credentials?.email || !credentials?.password) return null;
+        if (
+          !credentials?.email ||
+          !credentials?.password ||
+          Buffer.byteLength(credentials.password, "utf8") > 72
+        )
+          return null;
+        const email = credentials.email.trim().toLowerCase();
+        const key = createHash("sha256").update(email).digest("hex");
+        const attempts = await prisma.$queryRaw<
+          { count: number }[]
+        >`INSERT INTO "LoginAttempt" ("key", "count", "expiresAt") VALUES (${key}, 1, NOW() + INTERVAL '15 minutes') ON CONFLICT ("key") DO UPDATE SET "count" = CASE WHEN "LoginAttempt"."expiresAt" < NOW() THEN 1 ELSE "LoginAttempt"."count" + 1 END, "expiresAt" = CASE WHEN "LoginAttempt"."expiresAt" < NOW() THEN NOW() + INTERVAL '15 minutes' ELSE "LoginAttempt"."expiresAt" END RETURNING "count"`;
+        if (attempts[0].count > 8) return null;
 
-        const user = await prisma.user.findUnique({
-          where: { email: credentials.email },
+        const accounts = await prisma.user.findMany({
+          where: { email: { equals: email, mode: "insensitive" } },
           include: { roles: { include: { role: true } } },
+          take: 2,
         });
-        if (!user || !user.active) return null;
+        const user = accounts.length === 1 ? accounts[0] : null;
+        if (!user || !user.active || user.deletedAt) return null;
 
-        const valid = await bcrypt.compare(credentials.password, user.passwordHash);
+        const valid = await bcrypt.compare(
+          credentials.password,
+          user.passwordHash,
+        );
         if (!valid) return null;
+        await prisma.loginAttempt.deleteMany({ where: { key } });
 
         return {
           id: user.id,
+          sessionVersion: user.sessionVersion,
           email: user.email,
           name: user.name,
           roles: user.roles.map((r) => r.role.name),
@@ -38,6 +57,7 @@ export const authOptions: NextAuthOptions = {
     async jwt({ token, user }) {
       if (user) {
         token.id = user.id;
+        token.sessionVersion = user.sessionVersion;
         token.roles = user.roles;
       }
       return token;
@@ -45,42 +65,25 @@ export const authOptions: NextAuthOptions = {
     async session({ session, token }) {
       if (session.user) {
         session.user.id = token.id;
+        session.user.sessionVersion = token.sessionVersion;
         session.user.roles = token.roles;
       }
       return session;
     },
   },
   secret: process.env.NEXTAUTH_SECRET,
+  logger: {
+    error(code) {
+      console.error("auth.error", { code });
+    },
+    warn(code) {
+      console.warn("auth.warning", { code });
+    },
+    debug() {},
+  },
 };
 
 /** Simple permission check helper used by API routes. Extend the map as
  * more permission keys are needed — see Prisma Permission model for the
  * full architecture this is designed to grow into. */
-export const ROLE_PERMISSIONS: Record<string, string[]> = {
-  SUPER_ADMIN: ["*"],
-  GENERAL_MANAGER: ["*"],
-  TENDERING_MANAGER: ["project.*", "quote.*", "boq.*", "panel.*"],
-  TENDERING_ENGINEER: ["project.view", "boq.*", "panel.view"],
-  ELECTRICAL_DESIGN_ENGINEER: ["panel.*", "boq.view", "catalog.view"],
-  ESTIMATOR: ["boq.*", "panel.*", "pricing.*", "quote.*"],
-  PROCUREMENT_ENGINEER: ["catalog.*", "supplier.*", "pricing.*"],
-  SALES_ENGINEER: ["quote.view", "project.view"],
-  DOCUMENT_CONTROLLER: ["document.*"],
-  STORE_INVENTORY_USER: ["inventory.*"],
-  FINANCE_USER: ["pricing.view", "quote.view"],
-  CLIENT_USER: ["project.view"],
-  VENDOR_USER: ["supplier.rfq.respond"],
-  CONSULTANT_USER: ["project.view"],
-};
-
-export function hasPermission(roles: string[], permission: string): boolean {
-  for (const role of roles) {
-    const perms = ROLE_PERMISSIONS[role] ?? [];
-    if (perms.includes("*")) return true;
-    for (const p of perms) {
-      if (p === permission) return true;
-      if (p.endsWith(".*") && permission.startsWith(p.slice(0, -1))) return true;
-    }
-  }
-  return false;
-}
+export { hasPermission, ROLE_PERMISSIONS } from "./permissions";

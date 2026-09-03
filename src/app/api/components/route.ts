@@ -10,8 +10,11 @@ export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const q = searchParams.get("q") ?? undefined;
   const category = searchParams.get("category") ?? undefined;
-  const page = Number(searchParams.get("page") ?? "1");
-  const pageSize = Math.min(Number(searchParams.get("pageSize") ?? "50"), 200);
+  const page = Math.max(1, Math.floor(Number(searchParams.get("page")) || 1));
+  const pageSize = Math.min(
+    100,
+    Math.max(1, Math.floor(Number(searchParams.get("pageSize")) || 50)),
+  );
 
   const where: any = { active: true };
   if (category) where.category = category;
@@ -59,7 +62,10 @@ export async function POST(req: NextRequest) {
   const body = await req.json();
   const parsed = createComponentSchema.safeParse(body);
   if (!parsed.success) {
-    return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
+    return NextResponse.json(
+      { error: parsed.error.flatten() },
+      { status: 400 },
+    );
   }
 
   const component = await prisma.component.create({ data: parsed.data as any });

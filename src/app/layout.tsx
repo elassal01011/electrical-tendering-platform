@@ -1,22 +1,24 @@
 import type { Metadata } from "next";
 import "./globals.css";
 import { Providers } from "./providers";
-import { Sidebar } from "@/components/Sidebar";
-
+import { AppShell } from "@/components/AppShell";
 export const metadata: Metadata = {
-  title: "Electrical Tendering & CPQ Platform",
-  description: "Tendering, BOQ, panel engineering, pricing and quotation management",
+  title: "E-SOLUTIONS Tendering",
+  description: "Electrical Tendering · CPQ · Panel Engineering",
 };
-
-export default function RootLayout({ children }: { children: React.ReactNode }) {
+export default function RootLayout({
+  children,
+}: {
+  children: React.ReactNode;
+}) {
   return (
-    <html lang="en" className="dark">
+    <html lang="en" suppressHydrationWarning>
       <body>
+        <a href="#main-content" className="sr-only focus:not-sr-only">
+          Skip to content
+        </a>
         <Providers>
-          <div className="flex min-h-screen">
-            <Sidebar />
-            <main className="flex-1 p-6">{children}</main>
-          </div>
+          <AppShell>{children}</AppShell>
         </Providers>
       </body>
     </html>

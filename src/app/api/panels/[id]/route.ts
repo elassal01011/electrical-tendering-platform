@@ -2,7 +2,10 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/db/prisma";
 import { requirePermission, writeAuditLog } from "@/lib/auth/apiGuard";
-import { computePricingSummary, type LineItemInput } from "@/lib/services/pricing/pricingEngine";
+import {
+  computePricingSummary,
+  type LineItemInput,
+} from "@/lib/services/pricing/pricingEngine";
 
 /**
  * GET returns the panel BOM (Section 20) plus a live-computed financial
@@ -13,7 +16,11 @@ import { computePricingSummary, type LineItemInput } from "@/lib/services/pricin
  * — a full commercial-rules UI (Section 14, per project/client/category
  * overrides) is a clean extension point, not built out in this pass.
  */
-export async function GET(req: NextRequest, { params }: { params: { id: string } }) {
+export async function GET(
+  req: NextRequest,
+  { params: routeParams }: { params: Promise<{ id: string }> },
+) {
+  const params = await routeParams;
   const guard = await requirePermission("panel.view");
   if (guard.error) return guard.error;
 
@@ -38,7 +45,11 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
   for (const pc of panel.components) {
     totalLaborHours += Number(pc.laborHours);
     if (pc.overridePrice != null) {
-      items.push({ listPrice: Number(pc.overridePrice), supplierDiscountPct: 0, quantity: Number(pc.quantity) });
+      items.push({
+        listPrice: Number(pc.overridePrice),
+        supplierDiscountPct: 0,
+        quantity: Number(pc.quantity),
+      });
       continue;
     }
     const now = new Date();
@@ -55,21 +66,32 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
       ? await prisma.supplierDiscount.findFirst({
           where: {
             supplierId: supplierPrice.supplierId,
-            OR: [{ brand: pc.component.manufacturer }, { category: pc.component.category }],
+            OR: [
+              { brand: pc.component.manufacturer },
+              { category: pc.component.category },
+            ],
             effectiveFrom: { lte: now },
-            AND: [{ OR: [{ effectiveTo: null }, { effectiveTo: { gte: now } }] }],
+            AND: [
+              { OR: [{ effectiveTo: null }, { effectiveTo: { gte: now } }] },
+            ],
           },
           orderBy: { discountPct: "desc" },
         })
       : null;
     items.push({
-      listPrice: supplierPrice ? Number(supplierPrice.price) : (pc.component.listPrice ? Number(pc.component.listPrice) : 0),
+      listPrice: supplierPrice
+        ? Number(supplierPrice.price)
+        : pc.component.listPrice
+          ? Number(pc.component.listPrice)
+          : 0,
       supplierDiscountPct: discount ? Number(discount.discountPct) : 0,
       quantity: Number(pc.quantity),
     });
   }
 
-  const marginRule = await prisma.marginRule.findFirst({ where: { active: true } });
+  const marginRule = await prisma.marginRule.findFirst({
+    where: { active: true },
+  });
 
   const summary =
     items.length > 0
@@ -93,13 +115,21 @@ const addComponentSchema = z.object({
   laborHours: z.number().nonnegative().default(0),
 });
 
-export async function POST(req: NextRequest, { params }: { params: { id: string } }) {
+export async function POST(
+  req: NextRequest,
+  { params: routeParams }: { params: Promise<{ id: string }> },
+) {
+  const params = await routeParams;
   const guard = await requirePermission("panel.edit");
   if (guard.error) return guard.error;
 
   const body = await req.json();
   const parsed = addComponentSchema.safeParse(body);
-  if (!parsed.success) return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
+  if (!parsed.success)
+    return NextResponse.json(
+      { error: parsed.error.flatten() },
+      { status: 400 },
+    );
 
   const panelComponent = await prisma.panelComponent.create({
     data: { panelId: params.id, ...parsed.data },

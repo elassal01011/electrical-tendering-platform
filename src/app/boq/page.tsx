@@ -1,121 +1,376 @@
 "use client";
-
 import { useEffect, useState } from "react";
+import { useSession } from "next-auth/react";
+import { hasPermission } from "@/lib/auth/permissions";
+import { requestJson } from "@/lib/client/request";
 import { ExcelImportPanel } from "@/components/boq/ExcelImportPanel";
-
-type Project = { id: string; code: string; name: string };
-type BOQItem = {
-  id: string; lineNo: number; rawDescription: string; quantity: string; unit: string; status: string;
-  matchScore: string | null; matchReason: string | null;
-  matchedComponent: { manufacturer: string; partNumber: string; description: string; listPrice: string | null; listPriceCurrency: string } | null;
-  appliedUnitPrice: string | null; appliedCurrency: string | null; priceSource: string | null;
-  appliedSupplier: { companyName: string } | null;
-};
-type BOQ = { id: string; name: string; items: BOQItem[] };
-
-const SAMPLE_ROWS = `250A MCCB, 4P, 36kA, adjustable trip, Schneider | 4 | NO\n1600A ACB 4P 65kA 415V ABB draw-out | 1 | NO\n100A MCB 3P | 20 | NO\n63A RCCB 4P 30mA | 10 | NO`;
-
-export default function BOQPage() {
-  const [projects, setProjects] = useState<Project[]>([]);
-  const [projectId, setProjectId] = useState("");
-  const [rowsText, setRowsText] = useState(SAMPLE_ROWS);
-  const [boq, setBoq] = useState<BOQ | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
-
+import { EngineeringReview } from "@/components/boq/EngineeringReview";
+import {
+  PageHeader,
+  DataTable,
+  StatusBadge,
+  EmptyState,
+} from "@/components/ui";
+export default function BOQ() {
+  const { data: session } = useSession();
+  const can = (p: string) => hasPermission(session?.user.roles ?? [], p);
+  const [projects, setProjects] = useState<any[]>([]),
+    [projectId, setProjectId] = useState(""),
+    [boqs, setBoqs] = useState<any[]>([]),
+    [boq, setBoq] = useState<any>(null),
+    [boqId, setBoqId] = useState(""),
+    [upload, setUpload] = useState(false),
+    [page, setPage] = useState(1),
+    [total, setTotal] = useState(0),
+    [q, setQ] = useState(""),
+    [error, setError] = useState(""),
+    [notice, setNotice] = useState(""),
+    [busy, setBusy] = useState(false),
+    [review, setReview] = useState(""),
+    [manual, setManual] = useState(false),
+    [text, setText] = useState("");
   useEffect(() => {
-    fetch("/api/projects").then(r => r.json()).then(d => {
-      setProjects(d.projects ?? []);
-      if (d.projects?.[0]) setProjectId(d.projects[0].id);
-    });
+    const params = new URLSearchParams(window.location.search);
+    requestJson("/api/projects")
+      .then((d) => {
+        setProjects(d.projects);
+        if (params.get("boqId")) {
+          setBoqId(params.get("boqId")!);
+          requestJson("/api/boq/" + params.get("boqId"))
+            .then((b) => setProjectId(b.boq.projectId))
+            .catch((e) => setError(e.message));
+        } else setProjectId(params.get("projectId") || d.projects[0]?.id || "");
+      })
+      .catch((e) => setError(e.message));
   }, []);
-
-  async function handleImport() {
-    setBusy(true); setError(null); setNotice(null);
+  useEffect(() => {
+    if (projectId)
+      requestJson("/api/projects/" + projectId)
+        .then((d) => setBoqs(d.project.boqs))
+        .catch((e) => setError(e.message));
+  }, [projectId, boqId]);
+  async function load() {
+    if (!boqId) return;
+    const d = await requestJson(
+      "/api/boq/" + boqId + "?page=" + page + "&q=" + encodeURIComponent(q),
+    );
+    setBoq(d.boq);
+    setTotal(d.total);
+  }
+  useEffect(() => {
+    const t = setTimeout(() => load().catch((e) => setError(e.message)), 200);
+    return () => clearTimeout(t);
+  }, [boqId, page, q]);
+  async function action(kind: string) {
+    if (!boqId) return;
+    setBusy(true);
+    setError("");
     try {
-      const rows = rowsText.split("\n").map(l => l.trim()).filter(Boolean).map(line => {
-        const [description, qty, unit] = line.split("|").map(s => s.trim());
-        return { description, quantity: Number(qty || "1"), unit: unit || "NO" };
+      const d = await requestJson("/api/boq/" + boqId + "/" + kind, {
+        method: "POST",
+        body: "{}",
       });
-      const res = await fetch("/api/boq/import", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ projectId, name: "Imported BOQ", sourceType: "MANUAL", rows }) });
-      const data = await res.json();
-      if (!res.ok) throw new Error(JSON.stringify(data.error ?? data));
-      setBoq(data.boq);
-    } catch (e: any) { setError(e.message); } finally { setBusy(false); }
+      setNotice(
+        kind === "match"
+          ? d.processed +
+              " rows analyzed; " +
+              d.suggested +
+              " preliminary matches. " +
+              d.remaining +
+              " rows remain."
+          : d.results.filter((r: any) => r.source !== "UNPRICED").length +
+              " prices applied. " +
+              d.results.filter((r: any) => r.source === "UNPRICED").length +
+              " items need a price or currency rate.",
+      );
+      await load();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
   }
-
-  async function handleMatch() {
-    if (!boq) return;
-    setBusy(true); setError(null); setNotice(null);
+  async function addManual() {
+    setBusy(true);
+    setError("");
     try {
-      const res = await fetch(`/api/boq/${boq.id}/match`, { method: "POST" });
-      if (!res.ok) throw new Error(await res.text());
-      const refreshed = await fetch(`/api/boq/${boq.id}`).then(r => r.json());
-      setBoq(refreshed.boq);
-    } catch (e: any) { setError(e.message); } finally { setBusy(false); }
+      const rows = text
+        .split("\n")
+        .filter((l) => l.trim())
+        .map((l) => {
+          const [description, quantity, unit] = l
+            .split("|")
+            .map((s) => s.trim());
+          return {
+            description,
+            quantity: Number(quantity),
+            unit: unit || "NO",
+          };
+        });
+      const d = await requestJson("/api/boq/import", {
+        method: "POST",
+        body: JSON.stringify({
+          projectId,
+          name: "BOQ " + new Date().toISOString(),
+          rows,
+        }),
+      });
+      setBoqId(d.boq.id);
+      setManual(false);
+      setText("");
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
   }
-
-  async function handleApplyPrices() {
-    if (!boq) return;
-    setBusy(true); setError(null); setNotice(null);
-    try {
-      const res = await fetch(`/api/boq/${boq.id}/apply-prices`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
-      const data = await res.json();
-      if (!res.ok) throw new Error(JSON.stringify(data.error ?? data));
-      const refreshed = await fetch(`/api/boq/${boq.id}`).then(r => r.json());
-      setBoq(refreshed.boq);
-      const supplierCount = (data.results ?? []).filter((r: any) => r.source === "SUPPLIER_PRICE").length;
-      const fallbackCount = (data.results ?? []).filter((r: any) => r.source === "COMPONENT_LIST_PRICE").length;
-      setNotice(`Applied prices to ${supplierCount + fallbackCount} line(s): ${supplierCount} supplier price(s), ${fallbackCount} catalog fallback(s).`);
-    } catch (e: any) { setError(e.message); } finally { setBusy(false); }
-  }
-
-  const pricedTotal = boq?.items.reduce((sum, item) => sum + (item.appliedUnitPrice ? Number(item.appliedUnitPrice) * Number(item.quantity) : 0), 0) ?? 0;
-
   return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-xl font-semibold">BOQ Import, Matching &amp; Pricing</h1>
-        <p className="mt-1 text-sm text-slate-400">Match tender lines to catalog components, then apply the best active supplier price or catalog fallback.</p>
+    <>
+      <PageHeader
+        eyebrow="ENGINEERING"
+        title="BOQ analysis"
+        description="Import consultant workbooks, verify selections, and price your tender scope."
+      >
+        {can("boq.import") && (
+          <button className="btn-primary" onClick={() => setUpload(!upload)}>
+            {upload ? "Close upload" : "↑ Upload Excel BOQ"}
+          </button>
+        )}
+      </PageHeader>
+      <div className="card mb-5 grid md:grid-cols-2 gap-4">
+        <label>
+          Project
+          <select
+            className="input"
+            value={projectId}
+            onChange={(e) => {
+              setProjectId(e.target.value);
+              setBoqId("");
+              setBoq(null);
+              setPage(1);
+              setReview("");
+            }}
+          >
+            <option value="">Select project</option>
+            {projects.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.code} · {p.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          Bill of quantities
+          <select
+            className="input"
+            value={boqId}
+            onChange={(e) => {
+              setBoqId(e.target.value);
+              setPage(1);
+              setReview("");
+            }}
+          >
+            <option value="">Select BOQ</option>
+            {boqs.map((b) => (
+              <option key={b.id} value={b.id}>
+                {b.name}
+              </option>
+            ))}
+          </select>
+        </label>
       </div>
-      <div className="card space-y-3">
-        <label className="block text-xs uppercase text-slate-500">Project</label>
-        <select className="input" value={projectId} onChange={e => setProjectId(e.target.value)}>{projects.map(p => <option key={p.id} value={p.id}>{p.code} — {p.name}</option>)}</select>
-        <label className="block text-xs uppercase text-slate-500">BOQ rows — <code>description | quantity | unit</code></label>
-        <textarea className="input h-40 font-mono text-xs" value={rowsText} onChange={e => setRowsText(e.target.value)} />
-        <div className="flex flex-wrap gap-2">
-          <button className="btn-primary" onClick={handleImport} disabled={busy || !projectId}>Import BOQ</button>
-          <button className="btn-primary" onClick={handleMatch} disabled={busy || !boq}>Run Component Matching</button>
-          <button className="btn-primary" onClick={handleApplyPrices} disabled={busy || !boq}>Apply Best Available Prices</button>
-          <a className="btn-primary" href="/pricing">Manage Price Lists</a>
-        </div>
-        {error && <p className="text-sm text-red-400">{error}</p>}
-        {notice && <p className="text-sm text-emerald-400">{notice}</p>}
-      </div>
-      <ExcelImportPanel projectId={projectId} onImported={value => setBoq(value as BOQ)} />
-
-      {boq && (
-        <div className="card overflow-x-auto">
-          <div className="mb-3 flex items-center justify-between gap-4">
-            <h2 className="text-sm font-semibold text-slate-300">{boq.name}</h2>
-            <div className="text-sm text-slate-400">Applied BOQ value: <span className="font-semibold text-slate-100">{pricedTotal.toLocaleString(undefined, { maximumFractionDigits: 2 })}</span></div>
-          </div>
-          <table className="data-table w-full">
-            <thead><tr><th>#</th><th>Description</th><th>Qty</th><th>Status</th><th>Matched Component</th><th>Applied Price</th><th>Supplier / Source</th><th>Reason</th></tr></thead>
-            <tbody>{boq.items.map(item => <tr key={item.id}>
-              <td>{item.lineNo}</td>
-              <td className="max-w-xs">{item.rawDescription}</td>
-              <td>{item.quantity}</td>
-              <td><span className={item.status === "MATCHED" ? "text-green-400" : item.status === "SUGGESTED" ? "text-yellow-400" : "text-slate-500"}>{item.status}</span></td>
-              <td>{item.matchedComponent ? `${item.matchedComponent.manufacturer} ${item.matchedComponent.partNumber}` : "-"}</td>
-              <td className="whitespace-nowrap">{item.appliedUnitPrice ? `${Number(item.appliedUnitPrice).toLocaleString(undefined, { maximumFractionDigits: 2 })} ${item.appliedCurrency ?? ""}` : "-"}</td>
-              <td className="text-xs">{item.appliedSupplier?.companyName ?? (item.priceSource === "COMPONENT_LIST_PRICE" ? "Catalog list price" : "-")}</td>
-              <td className="max-w-sm text-xs text-slate-400">{item.matchReason}</td>
-            </tr>)}</tbody>
-          </table>
+      {error && (
+        <p className="error-box mb-4" role="alert">
+          {error}
+        </p>
+      )}
+      {notice && (
+        <p className="success-box mb-4" role="status">
+          {notice}
+        </p>
+      )}
+      {upload && (
+        <div className="mb-5">
+          <ExcelImportPanel
+            projectId={projectId}
+            onImported={(b: any) => {
+              setBoqId(b.id);
+              setBoq(b);
+              setPage(1);
+              setUpload(false);
+              setNotice(
+                "Excel BOQ imported successfully. Open engineering review to verify component selections.",
+              );
+            }}
+          />
         </div>
       )}
-    </div>
+      <div className="flex flex-wrap gap-2 mb-4">
+        {can("boq.import") && (
+          <button
+            className="btn-secondary"
+            disabled={!projectId}
+            onClick={() => setManual(!manual)}
+          >
+            + Add manual BOQ
+          </button>
+        )}
+        {can("boq.edit") && (
+          <button
+            className="btn-secondary"
+            disabled={!boqId || busy}
+            onClick={() => action("match")}
+          >
+            Auto match next 100 rows
+          </button>
+        )}
+        {can("pricing.edit") && (
+          <button
+            className="btn-secondary"
+            disabled={!boqId || busy}
+            onClick={() => action("apply-prices")}
+          >
+            Price next 100 reviewed rows
+          </button>
+        )}
+        <input
+          className="input max-w-xs"
+          placeholder="Filter description…"
+          aria-label="Filter BOQ rows"
+          value={q}
+          onChange={(e) => {
+            setQ(e.target.value);
+            setPage(1);
+          }}
+        />
+      </div>
+      {manual && (
+        <section className="card mb-4 space-y-3">
+          <label>
+            One row per line: description | quantity | unit
+            <textarea
+              className="input h-32"
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+            />
+          </label>
+          <button
+            disabled={busy || !text.trim()}
+            className="btn-primary"
+            onClick={addManual}
+          >
+            Create manual BOQ
+          </button>
+        </section>
+      )}
+      {review && (
+        <div className="mb-5">
+          <EngineeringReview
+            itemId={review}
+            onClose={() => setReview("")}
+            onSaved={() => {
+              load();
+              setNotice(
+                "Engineering selection verified. Reapply pricing for this item.",
+              );
+            }}
+          />
+        </div>
+      )}
+      {boq ? (
+        <div className="card">
+          <div className="flex justify-between mb-4">
+            <h2 className="font-semibold">{boq.name}</h2>
+            <span className="badge">{total} ROWS</span>
+          </div>
+          <DataTable
+            headers={[
+              "Item",
+              "Description",
+              "Qty / unit",
+              "Status",
+              "Matched component",
+              "Confidence",
+              "Applied cost",
+              "Review",
+            ]}
+          >
+            {boq.items.map((i: any) => (
+              <tr key={i.id}>
+                <td>{i.itemNumber || i.lineNo}</td>
+                <td className="min-w-64 max-w-lg">{i.rawDescription}</td>
+                <td>
+                  {i.quantity} {i.unit}
+                </td>
+                <td>
+                  <StatusBadge status={i.status} />
+                </td>
+                <td>
+                  {i.matchedComponent ? (
+                    <>
+                      {i.matchedComponent.manufacturer}
+                      <div className="muted text-xs">
+                        {i.matchedComponent.partNumber}
+                      </div>
+                    </>
+                  ) : (
+                    "Unselected"
+                  )}
+                </td>
+                <td title={i.matchReason}>
+                  {i.matchScore === null ? "—" : Number(i.matchScore) + "%"}
+                </td>
+                <td>
+                  {i.appliedUnitPrice === null
+                    ? "Not priced"
+                    : Number(i.appliedUnitPrice).toLocaleString() +
+                      " " +
+                      i.appliedCurrency}
+                  <div className="muted text-xs">
+                    {i.appliedSupplier?.companyName}
+                  </div>
+                </td>
+                <td>
+                  {can("boq.review") && (
+                    <button
+                      className="btn-secondary"
+                      onClick={() => setReview(i.id)}
+                    >
+                      Review
+                    </button>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </DataTable>
+          <div className="flex gap-3 mt-4">
+            <button
+              className="btn-secondary"
+              disabled={page === 1}
+              onClick={() => setPage(page - 1)}
+            >
+              Previous
+            </button>
+            <span className="muted py-2">
+              Page {page} of {Math.max(1, Math.ceil(total / 100))}
+            </span>
+            <button
+              className="btn-secondary"
+              disabled={page * 100 >= total}
+              onClick={() => setPage(page + 1)}
+            >
+              Next
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="card">
+          <EmptyState
+            title="Bring your tender scope into focus."
+            detail="Select a BOQ or upload an Excel workbook to start analysis."
+          />
+        </div>
+      )}
+    </>
   );
 }

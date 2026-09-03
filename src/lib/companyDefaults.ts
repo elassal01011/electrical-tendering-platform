@@ -1,0 +1,16 @@
+export const DEFAULT_COMPANY = {
+  companyName: "E-SOLUTIONS",
+  productName: "E-SOLUTIONS Tendering",
+  logo: null as string | null,
+  email: "",
+  phone: "",
+  website: "",
+  address: "",
+  taxNumber: "",
+  commercialRegistration: "",
+  currency: "EGP",
+  country: "Egypt",
+  quotationPrefix: "QTN",
+  minimumMarginPct: 15,
+  vatPct: 14,
+};

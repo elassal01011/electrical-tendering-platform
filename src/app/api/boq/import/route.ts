@@ -5,16 +5,18 @@ import { requirePermission, writeAuditLog } from "@/lib/auth/apiGuard";
 import { parseBoqDescription } from "@/lib/services/matching/boqParser";
 
 const rowSchema = z.object({
-  description: z.string().min(1),
-  quantity: z.number().positive(),
+  description: z.string().min(1).max(5000),
+  quantity: z.number().positive().max(999999999),
   unit: z.string().default("NO"),
 });
 
 const importSchema = z.object({
   projectId: z.string().min(1),
   name: z.string().default("Imported BOQ"),
-  sourceType: z.enum(["MANUAL", "EXCEL_IMPORT", "CSV_IMPORT"]).default("MANUAL"),
-  rows: z.array(rowSchema).min(1),
+  sourceType: z
+    .enum(["MANUAL", "EXCEL_IMPORT", "CSV_IMPORT"])
+    .default("MANUAL"),
+  rows: z.array(rowSchema).min(1).max(500),
 });
 
 /**
@@ -31,7 +33,10 @@ export async function POST(req: NextRequest) {
   const body = await req.json();
   const parsed = importSchema.safeParse(body);
   if (!parsed.success) {
-    return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
+    return NextResponse.json(
+      { error: parsed.error.flatten() },
+      { status: 400 },
+    );
   }
   const { projectId, name, sourceType, rows } = parsed.data;
 

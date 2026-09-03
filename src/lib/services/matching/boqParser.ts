@@ -121,7 +121,13 @@ export function parseBoqDescription(rawInput: string): ParsedSpec {
   // Poles, e.g. "4P", "3-pole", "3 pole"
   const polesMatch = lower.match(/(\d)\s*[- ]?\s*p(?:ole)?s?\b/i);
   const poleAlias = lower.match(/\b(tpn|tp|sp|dp)\b/i)?.[1];
-  const poles = polesMatch ? Number(polesMatch[1]) : poleAlias ? ({ sp: 1, dp: 2, tp: 3, tpn: 4 } as const)[poleAlias as "sp"|"dp"|"tp"|"tpn"] : null;
+  const poles = polesMatch
+    ? Number(polesMatch[1])
+    : poleAlias
+      ? ({ sp: 1, dp: 2, tp: 3, tpn: 4 } as const)[
+          poleAlias as "sp" | "dp" | "tp" | "tpn"
+        ]
+      : null;
 
   // Breaking capacity, e.g. "36kA", "36 kA"
   const kaMatch = lower.match(/(\d{1,3}(?:\.\d+)?)\s*ka(?:ic)?\b/i);
@@ -130,27 +136,56 @@ export function parseBoqDescription(rawInput: string): ParsedSpec {
   // Voltage, e.g. "415V", "690 V"
   const voltMatch = lower.match(/(\d{2,4})\s*v(?:ac|olts?)?\b/i);
   const kvMatch = lower.match(/(\d+(?:\.\d+)?)\s*kv\b/i);
-  const voltageV = voltMatch ? Number(voltMatch[1]) : kvMatch ? Number(kvMatch[1]) * 1000 : null;
+  const voltageV = voltMatch
+    ? Number(voltMatch[1])
+    : kvMatch
+      ? Number(kvMatch[1]) * 1000
+      : null;
 
   // Trip type
   let tripType: string | null = null;
   if (/\bls\/?i\/?g\b|\blsig\b/i.test(lower)) tripType = "ELECTRONIC_LSIG";
   else if (/\bls\/?i\b|\blsi\b/i.test(lower)) tripType = "ELECTRONIC_LSI";
-  else if (/\bthermal[- ]?magnetic\b|\btm\b/i.test(lower)) tripType = "THERMAL_MAGNETIC";
+  else if (/\bthermal[- ]?magnetic\b|\btm\b/i.test(lower))
+    tripType = "THERMAL_MAGNETIC";
   else if (/\belectronic trip\b/i.test(lower)) tripType = "ELECTRONIC_LSI"; // conservative default
 
   const adjustable = /\badjustable\b/i.test(lower);
-  const earthLeakageMA = Number(lower.match(/(30|100|300)\s*ma\b/i)?.[1] ?? "") || null;
-  const coilVoltageV = Number(lower.match(/(?:coil|control)\s*(?:voltage)?\s*[:=-]?\s*(\d{2,4})\s*v/i)?.[1] ?? "") || null;
+  const earthLeakageMA =
+    Number(lower.match(/(30|100|300)\s*ma\b/i)?.[1] ?? "") || null;
+  const coilVoltageV =
+    Number(
+      lower.match(
+        /(?:coil|control)\s*(?:voltage)?\s*[:=-]?\s*(\d{2,4})\s*v/i,
+      )?.[1] ?? "",
+    ) || null;
   const frequencyHz = Number(lower.match(/(50|60)\s*hz\b/i)?.[1] ?? "") || null;
-  const motorPowerKW = Number(lower.match(/(\d+(?:\.\d+)?)\s*kw\b/i)?.[1] ?? "") || null;
-  const motorPowerHP = Number(lower.match(/(\d+(?:\.\d+)?)\s*hp\b/i)?.[1] ?? "") || null;
+  const motorPowerKW =
+    Number(lower.match(/(\d+(?:\.\d+)?)\s*kw\b/i)?.[1] ?? "") || null;
+  const motorPowerHP =
+    Number(lower.match(/(\d+(?:\.\d+)?)\s*hp\b/i)?.[1] ?? "") || null;
   const utilizationMatch = lower.match(/\bac\s*[- ]?([134])\b/i)?.[1];
-  const utilizationCategory = (utilizationMatch ? "AC" + utilizationMatch : null) as ParsedSpec["utilizationCategory"];
-  const curve = (lower.match(/\bcurve\s*([bcd])\b/i)?.[1]?.toUpperCase() ?? null) as ParsedSpec["curve"];
-  const spd = lower.match(/\btype\s*(1\s*\+\s*2|1|2)\b/i)?.[1]?.replace(/\s/g, "");
-  const spdType = spd === "1+2" ? "TYPE_1_2" : spd === "1" ? "TYPE_1" : spd === "2" ? "TYPE_2" : null;
-  const mounting = /\bdraw[ -]?out\b/i.test(lower) ? "DRAW_OUT" : /\bfixed\b/i.test(lower) ? "FIXED" : null;
+  const utilizationCategory = (
+    utilizationMatch ? "AC" + utilizationMatch : null
+  ) as ParsedSpec["utilizationCategory"];
+  const curve = (lower.match(/\bcurve\s*([bcd])\b/i)?.[1]?.toUpperCase() ??
+    null) as ParsedSpec["curve"];
+  const spd = lower
+    .match(/\btype\s*(1\s*\+\s*2|1|2)\b/i)?.[1]
+    ?.replace(/\s/g, "");
+  const spdType =
+    spd === "1+2"
+      ? "TYPE_1_2"
+      : spd === "1"
+        ? "TYPE_1"
+        : spd === "2"
+          ? "TYPE_2"
+          : null;
+  const mounting = /\bdraw[ -]?out\b/i.test(lower)
+    ? "DRAW_OUT"
+    : /\bfixed\b/i.test(lower)
+      ? "FIXED"
+      : null;
 
   return {
     category,
@@ -161,8 +196,15 @@ export function parseBoqDescription(rawInput: string): ParsedSpec {
     voltageV,
     tripType,
     adjustable,
-    earthLeakageMA, coilVoltageV, frequencyHz, motorPowerKW, motorPowerHP,
-    utilizationCategory, curve, spdType, mounting,
+    earthLeakageMA,
+    coilVoltageV,
+    frequencyHz,
+    motorPowerKW,
+    motorPowerHP,
+    utilizationCategory,
+    curve,
+    spdType,
+    mounting,
     raw,
   };
 }

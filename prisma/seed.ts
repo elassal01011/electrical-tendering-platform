@@ -1,4 +1,9 @@
-import { PrismaClient, RoleName, ComponentCategory, PartyType } from "@prisma/client";
+import {
+  PrismaClient,
+  RoleName,
+  ComponentCategory,
+  PartyType,
+} from "@prisma/client";
 import bcrypt from "bcryptjs";
 
 const prisma = new PrismaClient();
@@ -14,40 +19,102 @@ async function main() {
   }
 
   console.log("Seeding admin user...");
-  const adminPasswordHash = await bcrypt.hash("ChangeMe123!", 10);
+  const adminEmail = process.env.ADMIN_EMAIL?.trim().toLowerCase();
+  const adminPassword = process.env.ADMIN_PASSWORD;
+  if (
+    !adminEmail ||
+    !adminPassword ||
+    adminPassword.length < 12 ||
+    Buffer.byteLength(adminPassword, "utf8") > 72
+  )
+    throw new Error(
+      "Set ADMIN_EMAIL and a unique ADMIN_PASSWORD of 12–72 characters before seeding.",
+    );
+  const adminPasswordHash = await bcrypt.hash(adminPassword, 12);
   const admin = await prisma.user.upsert({
-    where: { email: "admin@tendering.local" },
-    update: { passwordHash: adminPasswordHash, active: true, name: "Platform Admin" },
-    create: { email: "admin@tendering.local", passwordHash: adminPasswordHash, name: "Platform Admin" },
+    where: { email: adminEmail },
+    update: {},
+    create: {
+      email: adminEmail,
+      passwordHash: adminPasswordHash,
+      name: "Platform Admin",
+    },
   });
-  const superAdminRole = await prisma.role.findUniqueOrThrow({ where: { name: "SUPER_ADMIN" } });
+  const superAdminRole = await prisma.role.findUniqueOrThrow({
+    where: { name: "SUPER_ADMIN" },
+  });
   await prisma.userRole.upsert({
     where: { userId_roleId: { userId: admin.id, roleId: superAdminRole.id } },
     update: {},
     create: { userId: admin.id, roleId: superAdminRole.id },
   });
 
+  if (process.env.SEED_DEMO_DATA !== "true") return;
   console.log("Seeding sample client / consultant (SAMPLE DATA)...");
   const client = await prisma.party.upsert({
-    where: { type_companyName: { type: PartyType.CLIENT, companyName: "Sample Client" } }, update: {},
-    create: { type: PartyType.CLIENT, companyName: "Sample Client", country: "Egypt", city: "Cairo" },
+    where: {
+      type_companyName: {
+        type: PartyType.CLIENT,
+        companyName: "Sample Client",
+      },
+    },
+    update: {},
+    create: {
+      type: PartyType.CLIENT,
+      companyName: "Sample Client",
+      country: "Egypt",
+      city: "Cairo",
+    },
   });
   const consultant = await prisma.party.upsert({
-    where: { type_companyName: { type: PartyType.CONSULTANT, companyName: "Sample Consultant" } }, update: {},
-    create: { type: PartyType.CONSULTANT, companyName: "Sample Consultant", country: "Egypt", city: "Cairo" },
+    where: {
+      type_companyName: {
+        type: PartyType.CONSULTANT,
+        companyName: "Sample Consultant",
+      },
+    },
+    update: {},
+    create: {
+      type: PartyType.CONSULTANT,
+      companyName: "Sample Consultant",
+      country: "Egypt",
+      city: "Cairo",
+    },
   });
   const supplierSchneider = await prisma.party.upsert({
-    where: { type_companyName: { type: PartyType.SUPPLIER, companyName: "Sample Schneider Distributor (SAMPLE)" } }, update: {},
-    create: { type: PartyType.SUPPLIER, companyName: "Sample Schneider Distributor (SAMPLE)", country: "Egypt" },
+    where: {
+      type_companyName: {
+        type: PartyType.SUPPLIER,
+        companyName: "Sample Schneider Distributor (SAMPLE)",
+      },
+    },
+    update: {},
+    create: {
+      type: PartyType.SUPPLIER,
+      companyName: "Sample Schneider Distributor (SAMPLE)",
+      country: "Egypt",
+    },
   });
   const supplierABB = await prisma.party.upsert({
-    where: { type_companyName: { type: PartyType.SUPPLIER, companyName: "Sample ABB Distributor (SAMPLE)" } }, update: {},
-    create: { type: PartyType.SUPPLIER, companyName: "Sample ABB Distributor (SAMPLE)", country: "Egypt" },
+    where: {
+      type_companyName: {
+        type: PartyType.SUPPLIER,
+        companyName: "Sample ABB Distributor (SAMPLE)",
+      },
+    },
+    update: {},
+    create: {
+      type: PartyType.SUPPLIER,
+      companyName: "Sample ABB Distributor (SAMPLE)",
+      country: "Egypt",
+    },
   });
 
   console.log("Seeding demo project: Zed Towers - Phase 4 (SAMPLE DATA)...");
   const project = await prisma.project.upsert({
-    where: { code: "ZED-P4-001" }, update: {}, create: {
+    where: { code: "ZED-P4-001" },
+    update: {},
+    create: {
       code: "ZED-P4-001",
       name: "Zed Towers - Phase 4",
       clientId: client.id,
@@ -60,7 +127,9 @@ async function main() {
     },
   });
 
-  console.log("Seeding component catalog (SAMPLE — not real supplier prices)...");
+  console.log(
+    "Seeding component catalog (SAMPLE — not real supplier prices)...",
+  );
   const componentsData = [
     {
       manufacturer: "Schneider Electric",
@@ -147,40 +216,169 @@ async function main() {
 
   const components = [];
   for (const c of componentsData) {
-    components.push(await prisma.component.upsert({ where: { manufacturer_partNumber: { manufacturer: c.manufacturer, partNumber: c.partNumber } }, update: c, create: c }));
+    components.push(
+      await prisma.component.upsert({
+        where: {
+          manufacturer_partNumber: {
+            manufacturer: c.manufacturer,
+            partNumber: c.partNumber,
+          },
+        },
+        update: c,
+        create: c,
+      }),
+    );
   }
 
   console.log("Seeding supplier discounts (SAMPLE)...");
-  for (const d of [{ supplierId: supplierSchneider.id, brand: "Schneider Electric", qtyBandMin: 0, discountPct: 22 }, { supplierId: supplierABB.id, brand: "ABB", qtyBandMin: 0, discountPct: 18 }]) {
-    const existing = await prisma.supplierDiscount.findFirst({ where: { supplierId: d.supplierId, brand: d.brand, category: null, qtyBandMin: 0 } });
-    if (existing) await prisma.supplierDiscount.update({ where: { id: existing.id }, data: { discountPct: d.discountPct } });
+  for (const d of [
+    {
+      supplierId: supplierSchneider.id,
+      brand: "Schneider Electric",
+      qtyBandMin: 0,
+      discountPct: 22,
+    },
+    {
+      supplierId: supplierABB.id,
+      brand: "ABB",
+      qtyBandMin: 0,
+      discountPct: 18,
+    },
+  ]) {
+    const existing = await prisma.supplierDiscount.findFirst({
+      where: {
+        supplierId: d.supplierId,
+        brand: d.brand,
+        category: null,
+        qtyBandMin: 0,
+      },
+    });
+    if (existing)
+      await prisma.supplierDiscount.update({
+        where: { id: existing.id },
+        data: { discountPct: d.discountPct },
+      });
     else await prisma.supplierDiscount.create({ data: d });
   }
 
   console.log("Seeding labor rate / overhead / margin rules (SAMPLE)...");
-  await prisma.laborRate.upsert({ where: { label_currency: { label: "Panel Assembly Technician", currency: "EGP" } }, update: { hourlyRate: 150 }, create: { label: "Panel Assembly Technician", hourlyRate: 150, currency: "EGP" } });
-  await prisma.overheadRule.upsert({ where: { label: "Standard Workshop Overhead" }, update: { overheadPct: 12 }, create: { label: "Standard Workshop Overhead", overheadPct: 12 } });
-  await prisma.marginRule.upsert({ where: { label: "Default Markup" }, update: { markupPct: 20 }, create: { label: "Default Markup", markupPct: 20 } });
+  await prisma.laborRate.upsert({
+    where: {
+      label_currency: { label: "Panel Assembly Technician", currency: "EGP" },
+    },
+    update: { hourlyRate: 150 },
+    create: {
+      label: "Panel Assembly Technician",
+      hourlyRate: 150,
+      currency: "EGP",
+    },
+  });
+  await prisma.overheadRule.upsert({
+    where: { label: "Standard Workshop Overhead" },
+    update: { overheadPct: 12 },
+    create: { label: "Standard Workshop Overhead", overheadPct: 12 },
+  });
+  await prisma.marginRule.upsert({
+    where: { label: "Default Markup" },
+    update: { markupPct: 20 },
+    create: { label: "Default Markup", markupPct: 20 },
+  });
+
+  console.log("Seeding currency rates / pricing profile (SAMPLE)...");
+  const rateDate = new Date("2026-01-01T00:00:00.000Z");
+  for (const rate of [
+    { baseCurrency: "EGP", quoteCurrency: "EGP", rate: 1 },
+    { baseCurrency: "USD", quoteCurrency: "EGP", rate: 50 },
+  ]) {
+    await prisma.exchangeRate.upsert({
+      where: {
+        baseCurrency_quoteCurrency_asOf: {
+          baseCurrency: rate.baseCurrency,
+          quoteCurrency: rate.quoteCurrency,
+          asOf: rateDate,
+        },
+      },
+      update: { rate: rate.rate },
+      create: { ...rate, asOf: rateDate },
+    });
+  }
+  await prisma.systemSetting.upsert({
+    where: { key: "pricing.profile.standard" },
+    update: { value: { mode: "GROSS_MARGIN", targetGrossMarginPct: 20 } },
+    create: {
+      key: "pricing.profile.standard",
+      value: { mode: "GROSS_MARGIN", targetGrossMarginPct: 20 },
+    },
+  });
 
   console.log("Seeding panels: MDB-01, SMDB-01, DB-01...");
   const mdb01 = await prisma.panel.upsert({
-    where: { projectId_code: { projectId: project.id, code: "MDB-01" } }, update: {}, create: { projectId: project.id, code: "MDB-01", name: "Main Distribution Board 1", ratedVoltageV: 415, faultLevelKA: 65 },
+    where: { projectId_code: { projectId: project.id, code: "MDB-01" } },
+    update: {},
+    create: {
+      projectId: project.id,
+      code: "MDB-01",
+      name: "Main Distribution Board 1",
+      ratedVoltageV: 415,
+      faultLevelKA: 65,
+    },
   });
-  await prisma.panel.upsert({ where: { projectId_code: { projectId: project.id, code: "SMDB-01" } }, update: {}, create: { projectId: project.id, code: "SMDB-01", name: "Sub Main Distribution Board 1" } });
-  await prisma.panel.upsert({ where: { projectId_code: { projectId: project.id, code: "DB-01" } }, update: {}, create: { projectId: project.id, code: "DB-01", name: "Distribution Board 1" } });
+  await prisma.panel.upsert({
+    where: { projectId_code: { projectId: project.id, code: "SMDB-01" } },
+    update: {},
+    create: {
+      projectId: project.id,
+      code: "SMDB-01",
+      name: "Sub Main Distribution Board 1",
+    },
+  });
+  await prisma.panel.upsert({
+    where: { projectId_code: { projectId: project.id, code: "DB-01" } },
+    update: {},
+    create: {
+      projectId: project.id,
+      code: "DB-01",
+      name: "Distribution Board 1",
+    },
+  });
 
   await prisma.panelComponent.deleteMany({ where: { panelId: mdb01.id } });
   await prisma.panelComponent.createMany({
     data: [
-      { panelId: mdb01.id, componentId: components[3].id, quantity: 1, laborHours: 8 }, // ACB incomer
-      { panelId: mdb01.id, componentId: components[0].id, quantity: 4, laborHours: 2 }, // MCCB outgoing x4
-      { panelId: mdb01.id, componentId: components[5].id, quantity: 6, laborHours: 1 }, // RCCB
+      {
+        panelId: mdb01.id,
+        componentId: components[3].id,
+        quantity: 1,
+        laborHours: 8,
+      }, // ACB incomer
+      {
+        panelId: mdb01.id,
+        componentId: components[0].id,
+        quantity: 4,
+        laborHours: 2,
+      }, // MCCB outgoing x4
+      {
+        panelId: mdb01.id,
+        componentId: components[5].id,
+        quantity: 6,
+        laborHours: 1,
+      }, // RCCB
     ],
   });
 
-  console.log("Seeding BOQ with example lines demonstrating the matching workflow...");
+  console.log(
+    "Seeding BOQ with example lines demonstrating the matching workflow...",
+  );
   const boq = await prisma.bOQ.upsert({
-    where: { projectId_name_version: { projectId: project.id, name: "MDB-01 BOQ (from tender documents)", version: 1 } }, update: {}, create: {
+    where: {
+      projectId_name_version: {
+        projectId: project.id,
+        name: "MDB-01 BOQ (from tender documents)",
+        version: 1,
+      },
+    },
+    update: {},
+    create: {
       projectId: project.id,
       name: "MDB-01 BOQ (from tender documents)",
       sourceType: "MANUAL",
@@ -204,10 +402,14 @@ async function main() {
       },
     },
   });
-  console.log(`Seeded BOQ ${boq.id} — open it in the app and click "Run Automatic Component Matching".`);
+  console.log(
+    `Seeded BOQ ${boq.id} — open it in the app and click "Run Automatic Component Matching".`,
+  );
 
   console.log("\nSeed complete.");
-  console.log("Login with: admin@tendering.local / ChangeMe123!  (SAMPLE credential — change before any real use)");
+  console.log(
+    "Seed complete. Sign in with your configured ADMIN_EMAIL and ADMIN_PASSWORD.",
+  );
 }
 
 main()

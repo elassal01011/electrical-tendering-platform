@@ -3,7 +3,9 @@ import { parseBoqDescription } from "../../src/lib/services/matching/boqParser";
 
 describe("parseBoqDescription", () => {
   it("parses the canonical spec example: 250A MCCB 4P 36kA adjustable LS/I Schneider", () => {
-    const result = parseBoqDescription("250A MCCB 4P 36kA adjustable LS/I Schneider");
+    const result = parseBoqDescription(
+      "250A MCCB 4P 36kA adjustable LS/I Schneider",
+    );
     expect(result.category).toBe("MCCB");
     expect(result.manufacturer).toBe("Schneider Electric");
     expect(result.currentA).toBe(250);
@@ -14,7 +16,9 @@ describe("parseBoqDescription", () => {
   });
 
   it("parses a comma-separated BOQ style description", () => {
-    const result = parseBoqDescription("250A MCCB, 4P, 36kA, adjustable trip, Schneider");
+    const result = parseBoqDescription(
+      "250A MCCB, 4P, 36kA, adjustable trip, Schneider",
+    );
     expect(result.category).toBe("MCCB");
     expect(result.manufacturer).toBe("Schneider Electric");
     expect(result.currentA).toBe(250);

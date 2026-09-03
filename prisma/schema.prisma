@@ -13,8 +13,9 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
 }
 
 // ---------------------------------------------------------------------------
@@ -42,6 +43,7 @@ model User {
   id           String     @id @default(cuid())
   email        String     @unique
   passwordHash String
+  sessionVersion Int @default(0)
   name         String
   active       Boolean    @default(true)
   roles        UserRole[]
@@ -53,6 +55,57 @@ model User {
   auditLogs        AuditLog[]
   quoteRevisions   QuoteRevision[]
   notifications    Notification[]
+}
+
+model ExcelUpload {
+  id String @id @default(cuid())
+  userId String
+  fileName String
+  mimeType String
+  size Int
+  expiresAt DateTime
+  importedBoqId String? @unique
+  chunks ExcelUploadChunk[]
+  @@index([userId, expiresAt])
+}
+
+model ExcelUploadChunk {
+  uploadId String
+  index Int
+  bytes Bytes
+  upload ExcelUpload @relation(fields: [uploadId], references: [id], onDelete: Cascade)
+  @@id([uploadId, index])
+}
+
+model LoginAttempt {
+  key String @id
+  count Int @default(0)
+  expiresAt DateTime
+  @@index([expiresAt])
+}
+
+model CompanySettings {
+  id String @id @default("company")
+  companyName String @default("E-SOLUTIONS")
+  productName String @default("E-SOLUTIONS Tendering")
+  logo String?
+  email String @default("")
+  phone String @default("")
+  website String @default("")
+  address String @default("")
+  taxNumber String @default("")
+  commercialRegistration String @default("")
+  currency String @default("EGP")
+  country String @default("Egypt")
+  quotationPrefix String @default("QTN")
+  minimumMarginPct Decimal @default(15) @db.Decimal(6,3)
+  vatPct Decimal @default(14) @db.Decimal(6,3)
+  updatedAt DateTime @updatedAt
+}
+
+model DocumentSequence {
+  key String @id
+  value Int @default(0)
 }
 
 model Role {
@@ -202,10 +255,14 @@ model Document {
   category    String
   fileName    String
   storageKey  String
+  bytes Bytes?
+  mimeType String @default("application/octet-stream")
+  deletedAt DateTime?
   version     Int      @default(1)
   uploadedBy  String
   description String?
   createdAt   DateTime @default(now())
+  @@unique([projectId, fileName, version])
 }
 
 // ---------------------------------------------------------------------------
@@ -549,6 +606,11 @@ model Quote {
   totalCost   Decimal?    @db.Decimal(16, 2)
   totalSell   Decimal?    @db.Decimal(16, 2)
   marginPct   Decimal?    @db.Decimal(6, 3)
+  discountPct Decimal @default(0) @db.Decimal(6,3)
+  vatPct Decimal @default(0) @db.Decimal(6,3)
+  terms Json?
+  companySnapshot Json?
+  createdBy String?
   createdAt   DateTime    @default(now())
   updatedAt   DateTime    @updatedAt
 
@@ -563,6 +625,9 @@ model QuoteItem {
   quoteId     String
   quote       Quote   @relation(fields: [quoteId], references: [id])
   description String
+  manufacturer String?
+  partNumber String?
+  unit String @default("NO")
   quantity    Decimal @db.Decimal(12, 3)
   unitCost    Decimal @db.Decimal(14, 2)
   unitSell    Decimal @db.Decimal(14, 2)

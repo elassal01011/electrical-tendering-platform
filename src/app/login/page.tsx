@@ -1,50 +1,150 @@
 "use client";
-
 import { useState } from "react";
 import { signIn } from "next-auth/react";
 import { useRouter } from "next/navigation";
-
+import { Brand } from "@/components/Brand";
 export default function LoginPage() {
   const router = useRouter();
-  const [email, setEmail] = useState("admin@tendering.local");
-  const [password, setPassword] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
-
-  async function handleSubmit(e: React.FormEvent) {
+  const [email, setEmail] = useState(""),
+    [password, setPassword] = useState(""),
+    [show, setShow] = useState(false),
+    [error, setError] = useState(""),
+    [busy, setBusy] = useState(false),
+    [help, setHelp] = useState(false);
+  async function submit(e: React.FormEvent) {
     e.preventDefault();
-    setLoading(true);
-    setError(null);
-    const res = await signIn("credentials", { redirect: false, email, password });
-    setLoading(false);
-    if (res?.error) {
-      setError("Invalid email or password.");
-      return;
+    setBusy(true);
+    setError("");
+    try {
+      const result = await signIn("credentials", {
+        redirect: false,
+        email,
+        password,
+      });
+      if (!result?.ok)
+        setError(
+          "Incorrect email or password, inactive account, or too many attempts. Please try again later or contact your administrator.",
+        );
+      else {
+        router.push("/dashboard");
+        router.refresh();
+      }
+    } catch {
+      setError(
+        "Unable to connect to the authentication service. Please try again.",
+      );
+    } finally {
+      setBusy(false);
     }
-    router.push("/dashboard");
   }
-
   return (
-    <div className="mx-auto mt-24 max-w-sm">
-      <div className="card">
-        <h1 className="mb-1 text-lg font-semibold">Sign in</h1>
-        <p className="mb-4 text-sm text-slate-400">Electrical Tendering & CPQ Platform</p>
-        <form onSubmit={handleSubmit} className="space-y-3">
-          <input className="input" type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="Email" />
-          <input
-            className="input"
-            type="password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            placeholder="Password"
-          />
-          {error && <p className="text-sm text-red-400">{error}</p>}
-          <button className="btn-primary w-full" disabled={loading} type="submit">
-            {loading ? "Signing in..." : "Sign in"}
+    <main className="login-layout" id="main-content">
+      <section className="login-brand-panel">
+        <Brand />
+        <div>
+          <p className="eyebrow" style={{ color: "#9cbcdc" }}>
+            PRECISION FROM TENDER TO DELIVERY
+          </p>
+          <h1>
+            Engineering confidence.
+            <br />
+            <span>Commercial clarity.</span>
+          </h1>
+          <p
+            className="mt-6 max-w-sm text-sm leading-7"
+            style={{ color: "#a9bfd5" }}
+          >
+            One connected workspace for electrical tendering, panel engineering
+            and confident commercial decisions.
+          </p>
+          <svg
+            viewBox="0 0 400 130"
+            className="engineering-lines"
+            fill="none"
+            stroke="currentColor"
+          >
+            <path d="M0 30h400M65 30v25m0 20v40h270V75m0-20V30M200 30v25m0 20v40M50 55h30v20H50zM185 55h30v20h-30zM320 55h30v20h-30z" />
+            <circle cx="65" cy="30" r="4" />
+            <circle cx="200" cy="30" r="4" />
+            <circle cx="335" cy="30" r="4" />
+          </svg>
+          <div className="flex gap-6 text-xs" style={{ color: "#a9bfd5" }}>
+            <span>Electrical Tendering</span>
+            <span>CPQ</span>
+            <span>Panel Engineering</span>
+          </div>
+        </div>
+        <p className="login-caption">
+          BUILT FOR ENGINEERING. DESIGNED FOR BUSINESS.
+        </p>
+      </section>
+      <section className="login-main">
+        <form onSubmit={submit} className="space-y-5">
+          <div className="mb-8">
+            <p className="eyebrow">YOUR WORKSPACE AWAITS</p>
+            <h2>Welcome back</h2>
+            <p className="muted mt-2 text-sm">
+              Sign in to continue to your tendering workspace.
+            </p>
+          </div>
+          <label className="block">
+            Work email
+            <input
+              className="input"
+              type="email"
+              autoComplete="username"
+              required
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="you@company.com"
+            />
+          </label>
+          <label className="block">
+            Password
+            <div className="flex gap-2">
+              <input
+                className="input"
+                type={show ? "text" : "password"}
+                autoComplete="current-password"
+                required
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+              />
+              <button
+                type="button"
+                className="btn-secondary mt-1"
+                onClick={() => setShow(!show)}
+                aria-label={show ? "Hide password" : "Show password"}
+              >
+                {show ? "Hide" : "Show"}
+              </button>
+            </div>
+          </label>
+          <button
+            type="button"
+            className="text-sm muted"
+            onClick={() => setHelp(!help)}
+          >
+            Forgot password?
           </button>
-          <p className="text-xs text-slate-500">Seeded admin password: see README.md / prisma/seed.ts</p>
+          {help && (
+            <p className="notice">
+              Contact your company administrator to reset your account password.
+            </p>
+          )}
+          {error && (
+            <p className="error-box" role="alert">
+              {error}
+            </p>
+          )}
+          <button className="btn-primary w-full py-3" disabled={busy}>
+            {busy ? "Signing in…" : "Sign in to workspace →"}
+          </button>
+          <p className="muted pt-5 text-center text-xs">
+            Secure access for your engineering and commercial teams.
+          </p>
         </form>
-      </div>
-    </div>
+      </section>
+    </main>
   );
 }

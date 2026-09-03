@@ -2,7 +2,10 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/db/prisma";
 import { requirePermission, writeAuditLog } from "@/lib/auth/apiGuard";
-import { calculateBusbar, suggestStandardBarSize } from "@/lib/services/calculations/busbarCalculator";
+import {
+  calculateBusbar,
+  suggestStandardBarSize,
+} from "@/lib/services/calculations/busbarCalculator";
 
 const busbarInputSchema = z.object({
   type: z.literal("COPPER_SIZING"),
@@ -21,13 +24,21 @@ const busbarInputSchema = z.object({
  * sizing (Section 18) and thermal (Section 22) share the same
  * EngineeringCalculation table shape and are the next natural additions.
  */
-export async function POST(req: NextRequest, { params }: { params: { id: string } }) {
+export async function POST(
+  req: NextRequest,
+  { params: routeParams }: { params: Promise<{ id: string }> },
+) {
+  const params = await routeParams;
   const guard = await requirePermission("panel.edit");
   if (guard.error) return guard.error;
 
   const body = await req.json();
   const parsed = busbarInputSchema.safeParse(body);
-  if (!parsed.success) return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
+  if (!parsed.success)
+    return NextResponse.json(
+      { error: parsed.error.flatten() },
+      { status: 400 },
+    );
 
   const { type, ...calcInput } = parsed.data;
   const result = calculateBusbar(calcInput);

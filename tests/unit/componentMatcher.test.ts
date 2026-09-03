@@ -1,10 +1,21 @@
 import { describe, it, expect } from "vitest";
 import { parseBoqDescription } from "../../src/lib/services/matching/boqParser";
 import {
+  scoreComponent,
   rankCandidates,
   autoSelectBestMatch,
   type CandidateComponent,
 } from "../../src/lib/services/matching/componentMatcher";
+
+it.each(["currentA", "voltageV", "breakingCapacityKA", "poles"] as const)(
+  "blocks missing required catalog rating: %s",
+  (key) => {
+    const spec = parseBoqDescription("250A MCCB 4P 36kA 415V Schneider");
+    const result = scoreComponent(spec, { ...candidates[0], [key]: null });
+    expect(result.safe).toBe(false);
+    expect(autoSelectBestMatch([result])).toBeNull();
+  },
+);
 
 const candidates: CandidateComponent[] = [
   {
@@ -54,7 +65,9 @@ const candidates: CandidateComponent[] = [
 ];
 
 describe("component matching engine", () => {
-  const spec = parseBoqDescription("250A MCCB 4P 36kA adjustable LS/I Schneider");
+  const spec = parseBoqDescription(
+    "250A MCCB 4P 36kA adjustable LS/I Schneider",
+  );
 
   it("ranks the exact Schneider match first", () => {
     const ranked = rankCandidates(spec, candidates);
@@ -71,15 +84,23 @@ describe("component matching engine", () => {
 
   it("excludes wrong-category candidates entirely (score 0)", () => {
     const ranked = rankCandidates(spec, candidates);
-    const wrongCategory = ranked.find((r) => r.componentId === "schneider-mcb-wrong-category");
+    const wrongCategory = ranked.find(
+      (r) => r.componentId === "schneider-mcb-wrong-category",
+    );
     expect(wrongCategory!.score).toBe(0);
   });
 
   it("flags under-rated / insufficient breaking capacity candidates with a low score and safety reason", () => {
     const ranked = rankCandidates(spec, candidates);
-    const undersized = ranked.find((r) => r.componentId === "siemens-3va-undersized");
-    expect(undersized!.reasons.some((r) => r.includes("UNDER-rated"))).toBe(true);
-    expect(undersized!.reasons.some((r) => r.includes("INSUFFICIENT"))).toBe(true);
+    const undersized = ranked.find(
+      (r) => r.componentId === "siemens-3va-undersized",
+    );
+    expect(undersized!.reasons.some((r) => r.includes("UNDER-rated"))).toBe(
+      true,
+    );
+    expect(undersized!.reasons.some((r) => r.includes("INSUFFICIENT"))).toBe(
+      true,
+    );
   });
 
   it("auto-selects the best match when it clears the confidence threshold and has no safety issue", () => {
@@ -89,7 +110,9 @@ describe("component matching engine", () => {
   });
 
   it("never auto-selects a candidate with a breaking-capacity or current shortfall, even if ranked first", () => {
-    const onlyUnsafe = candidates.filter((c) => c.id === "siemens-3va-undersized");
+    const onlyUnsafe = candidates.filter(
+      (c) => c.id === "siemens-3va-undersized",
+    );
     const ranked = rankCandidates(spec, onlyUnsafe);
     const auto = autoSelectBestMatch(ranked);
     expect(auto).toBeNull();

@@ -1,51 +1,152 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
-import { requirePermission, writeAuditLog } from "@/lib/auth/apiGuard";
-
-export async function POST(req: NextRequest, { params }: { params: { id: string } }) {
-  const guard = await requirePermission("pricing.edit");
-  if (guard.error) return guard.error;
-  const body = await req.json().catch(() => ({}));
-  const supplierId = body.supplierId || null;
-  const project = await prisma.bOQ.findUnique({ where: { id: params.id }, include: { project: true, items: { include: { matchedComponent: true } } } });
-  if (!project) return NextResponse.json({ error: "BOQ not found" }, { status: 404 });
-  const now = new Date();
-  const results = [];
-  for (const item of project.items) {
-    if (!item.matchedComponentId || !item.matchedComponent) continue;
-    const where: any = {
-      componentId: item.matchedComponentId,
-      active: true,
-      effectiveFrom: { lte: now },
-      OR: [{ effectiveTo: null }, { effectiveTo: { gte: now } }],
-      ...(supplierId ? { supplierId } : {}),
-    };
-    const prices = await prisma.supplierPrice.findMany({ where, include: { supplier: true }, orderBy: { price: "asc" }, take: 50 });
-    const best = prices[0];
-    const applicableDiscounts = await prisma.supplierDiscount.findMany({
-      where: {
-        supplierId: best?.supplierId ?? supplierId ?? undefined,
-        OR: [{ brand: item.matchedComponent.manufacturer }, { category: item.matchedComponent.category }],
-        effectiveFrom: { lte: now },
-        AND: [{ OR: [{ effectiveTo: null }, { effectiveTo: { gte: now } }] }],
-        qtyBandMin: { lte: Math.floor(Number(item.quantity)) },
+import { requirePermission } from "@/lib/auth/apiGuard";
+import { apiError } from "@/lib/apiError";
+import { compareSupplierOffers } from "@/lib/services/pricing/supplierComparison";
+export const maxDuration = 60;
+export async function POST(
+  req: NextRequest,
+  { params: routeParams }: { params: Promise<{ id: string }> },
+) {
+  const params = await routeParams;
+  try {
+    const g = await requirePermission("pricing.edit");
+    if (g.error) return g.error;
+    const body = await req.json().catch(() => ({}));
+    const boq = await prisma.bOQ.findUniqueOrThrow({
+      where: { id: params.id },
+      include: {
+        project: true,
+        items: {
+          where: { status: "MATCHED", appliedUnitPrice: null },
+          include: { matchedComponent: true },
+          take: 100,
+        },
       },
-      orderBy: { discountPct: "desc" },
     });
-    if (best) {
-      const discount = applicableDiscounts.find((d) => !d.qtyBandMax || d.qtyBandMax >= Number(item.quantity));
-      const unitPrice = Number(best.price) * (1 - (discount ? Number(discount.discountPct) : 0) / 100);
-      const updated = await prisma.bOQItem.update({ where: { id: item.id }, data: { appliedSupplierPriceId: best.id, appliedSupplierId: best.supplierId, appliedUnitPrice: unitPrice, appliedCurrency: best.currency, priceAppliedAt: now, priceSource: "SUPPLIER_PRICE" }, include: { appliedSupplier: true, appliedSupplierPrice: true, matchedComponent: true } });
-      results.push({ itemId: item.id, source: "SUPPLIER_PRICE", supplier: best.supplier.companyName, listPrice: Number(best.price), discountPct: discount ? Number(discount.discountPct) : 0, unitPrice, currency: best.currency, updated });
-      continue;
+    const now = new Date(),
+      results: any[] = [];
+    const rates = await prisma.exchangeRate.findMany({
+      where: { quoteCurrency: boq.project.currency, asOf: { lte: now } },
+      orderBy: { asOf: "desc" },
+      distinct: ["baseCurrency"],
+    });
+    const rate = (currency: string) =>
+      currency === boq.project.currency
+        ? 1
+        : Number(rates.find((r) => r.baseCurrency === currency)?.rate) || null;
+    for (const item of boq.items) {
+      const component = item.matchedComponent;
+      if (!component) continue;
+      const prices = await prisma.supplierPrice.findMany({
+        where: {
+          componentId: component.id,
+          active: true,
+          supplier: { deletedAt: null },
+          effectiveFrom: { lte: now },
+          OR: [{ effectiveTo: null }, { effectiveTo: { gte: now } }],
+          ...(typeof body.supplierId === "string"
+            ? { supplierId: body.supplierId }
+            : {}),
+        },
+        include: { supplier: true },
+        take: 100,
+      });
+      const discounts = await prisma.supplierDiscount.findMany({
+        where: {
+          supplierId: { in: prices.map((p) => p.supplierId) },
+          effectiveFrom: { lte: now },
+          OR: [{ effectiveTo: null }, { effectiveTo: { gte: now } }],
+          qtyBandMin: { lte: Math.floor(Number(item.quantity)) },
+        },
+      });
+      const offers = compareSupplierOffers(
+        prices.map((p) => {
+          const matching = discounts.filter(
+            (d) =>
+              d.supplierId === p.supplierId &&
+              (!d.brand || d.brand === component.manufacturer) &&
+              (!d.category || d.category === component.category) &&
+              (d.qtyBandMax === null || Number(item.quantity) <= d.qtyBandMax),
+          );
+          const discountPct = Math.max(
+            0,
+            ...matching.map((d) => Number(d.discountPct)),
+          );
+          return {
+            id: p.id,
+            supplierId: p.supplierId,
+            price: Number(p.price),
+            currency: p.currency,
+            discountPct,
+            rate: rate(p.currency),
+          };
+        }),
+      );
+      const best = offers[0];
+      let unitPrice = best?.convertedNet ?? null,
+        source = best ? "SUPPLIER_PRICE" : "UNPRICED";
+      if (
+        !best &&
+        component.listPrice !== null &&
+        rate(component.listPriceCurrency) !== null
+      ) {
+        unitPrice =
+          Number(component.listPrice) * rate(component.listPriceCurrency)!;
+        source = "COMPONENT_LIST_PRICE";
+      }
+      if (unitPrice === null) {
+        results.push({
+          itemId: item.id,
+          source: "UNPRICED",
+          message:
+            "No usable price or currency conversion. Add an exchange rate or supplier price.",
+        });
+        continue;
+      }
+      await prisma.$transaction(async (tx) => {
+        const updated = await tx.bOQItem.updateMany({
+          where: {
+            id: item.id,
+            matchedComponentId: component.id,
+            status: "MATCHED",
+            appliedUnitPrice: null,
+          },
+          data: {
+            appliedSupplierPriceId: best?.id ?? null,
+            appliedSupplierId: best?.supplierId ?? null,
+            appliedUnitPrice: unitPrice,
+            appliedCurrency: boq.project.currency,
+            priceAppliedAt: now,
+            priceSource: source,
+          },
+        });
+        if (updated.count)
+          await tx.auditLog.create({
+            data: {
+              userId: g.userId,
+              action: "BOQ_PRICE_APPLIED",
+              entity: "BOQItem",
+              entityId: item.id,
+              newValue: {
+                source,
+                unitPrice,
+                currency: boq.project.currency,
+                discountPct: best?.discountPct ?? 0,
+                rate: best?.rate ?? rate(component.listPriceCurrency),
+              },
+            },
+          });
+      });
+      results.push({
+        itemId: item.id,
+        source,
+        unitPrice,
+        currency: boq.project.currency,
+      });
     }
-    if (item.matchedComponent.listPrice != null) {
-      const updated = await prisma.bOQItem.update({ where: { id: item.id }, data: { appliedSupplierPriceId: null, appliedSupplierId: null, appliedUnitPrice: item.matchedComponent.listPrice, appliedCurrency: item.matchedComponent.listPriceCurrency, priceAppliedAt: now, priceSource: "COMPONENT_LIST_PRICE" }, include: { matchedComponent: true } });
-      results.push({ itemId: item.id, source: "COMPONENT_LIST_PRICE", supplier: null, unitPrice: Number(item.matchedComponent.listPrice), currency: item.matchedComponent.listPriceCurrency, updated });
-    } else {
-      results.push({ itemId: item.id, source: "UNPRICED", message: "No supplier price or catalog list price available." });
-    }
+    return NextResponse.json({ results, processed: boq.items.length });
+  } catch (e) {
+    return apiError(e, "boq.price");
   }
-  await writeAuditLog({ userId: guard.userId, action: "BOQ_PRICES_APPLIED", entity: "BOQ", entityId: params.id, newValue: { supplierId, results: results.map(r => ({ itemId: r.itemId, source: r.source, unitPrice: (r as any).unitPrice, currency: (r as any).currency })) } });
-  return NextResponse.json({ results });
 }

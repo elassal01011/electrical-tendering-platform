@@ -1,107 +1,118 @@
-# Electrical Tendering, CPQ & Panel Engineering Platform
+# E-SOLUTIONS Tendering
 
-A tendering / estimation / CPQ platform for electrical panel-building and
-contracting companies. This repository is a **working foundation**, not a
-finished 60-module ERP — see "What's implemented" below before you plan
-around it.
+Electrical Tendering · CPQ · Panel Engineering
 
-## What's implemented (depth-first, per the agreed scope)
+An incremental upgrade of the existing Next.js / Prisma / Supabase / NextAuth application. The implemented workflow now covers client and project creation, reliable Excel BOQ import, engineer verification, supplier pricing, quotations, manager approvals, revisions and commercial exports.
 
-The core differentiator workflow is real and tested end-to-end:
+See [IMPLEMENTATION_REPORT.md](IMPLEMENTATION_REPORT.md) for the precise delivered scope and remaining work. A successful local build is not a production deployment verification.
 
+## Current capabilities
+
+- In-memory Excel reading with authenticated 1 MB upload chunks, a configurable 10 MB default limit, column overrides, review counts and explicit treatment of invalid quantities. Legacy `.xls` is rejected with conversion guidance.
+- Responsive E-SOLUTIONS shell; light/dark/system themes; searchable command palette; database-backed dashboard, clients, consultants, projects, components, suppliers and documents.
+- Preliminary component suggestions, explicit engineer verification and blocked electrical rating shortfalls. Supplier comparisons use net prices and currency conversion.
+- Quotation builder, draft editing, protected internal cost view, commercial discount/VAT, approval controls, immutable approved versions, new revisions, Excel exports and browser Print / Save PDF.
+- Company profile/logo, configurable pricing profiles, exchange/labor rates, supplier discounts, users, role policy viewer, password changes and audit UI.
+- Persistent login attempt limits, fresh database authorization on each API request, disabled-account/session revocation and safe bootstrap behavior.
+
+## Verification
+
+```bash
+npm install
+npx prisma generate
+npx prisma validate
+npm test
+npm run build
+npm audit
 ```
-BOQ text  →  parser  →  component matching engine  →  panel BOM
-          →  pricing engine (cost/discount/labor/overhead/markup)
-          →  quote (versioned)  →  Excel export
+
+For the optional database integration suite on Windows with Docker running:
+
+```powershell
+./scripts/verify-local.ps1
 ```
 
-- **Database**: full Prisma schema for the core entities (auth/RBAC, CRM
-  parties, projects, BOQ, catalog, suppliers, panels/BOM, engineering
-  calculations, quotes/revisions, audit log). Extension-only modules (SLD
-  editor, PDF technical/commercial offers, inventory/procurement, ERP
-  adapters) are modeled as tables but have **no business logic or UI** yet
-  — see the `[STUB]` markers in `prisma/schema.prisma`.
-- **Auth & RBAC**: NextAuth credentials login, all 14 roles from the spec,
-  a permission-check helper used by every API route, audit logging on
-  every write.
-- **BOQ parser** (`src/lib/services/matching/boqParser.ts`): rule-based
-  extraction of category / manufacturer / current / poles / breaking
-  capacity / voltage / trip type from free text.
-- **Component matching engine**
-  (`src/lib/services/matching/componentMatcher.ts`): weighted scoring
-  against the catalog, ranked alternatives, and an explicit safety rule —
-  it will **never** auto-select a component that is under-rated on
-  current or breaking capacity, even if it scores highest.
-- **Pricing engine** (`src/lib/services/pricing/pricingEngine.ts`): the
-  exact cost/discount/labor/overhead/markup/gross-margin formulas from the
-  spec, always returns both markup% and gross margin% side by side.
-- **Busbar sizing calculator**
-  (`src/lib/services/calculations/busbarCalculator.ts`): preliminary
-  copper sizing, every result tagged `PRELIMINARY` per the engineering
-  safety rule (never presented as certified design).
-- **API routes**: projects, BOQ import, BOQ auto-match, component catalog,
-  panels + live BOM pricing, panel engineering calculations, quotes
-  (versioned, never overwritten), quote approval, Excel export of a panel
-  BOM.
-- **UI**: login, dashboard (project pipeline), BOQ import + matching
-  screen, panel BOM + live pricing screen with Excel export.
-- **Tests**: 24 unit tests covering the parser, matcher, pricing engine,
-  and busbar calculator (`npm test`).
-- **Seed data**: the "Zed Towers - Phase 4" demo project from the spec,
-  with sample clients, suppliers, catalog components, panels, and a BOQ
-  ready to run through the matching engine.
-
-## What's explicitly stubbed / not built
-
-These have a correct database shape and are clean extension points, but
-no working code yet:
-
-- SLD graphical editor
-- PDF technical offer / commercial offer generation (Excel export of one
-  document type — panel BOM — is real; the other 7 export types listed in
-  the spec share the same ExcelJS setup and are a direct extension)
-- Document upload/storage pipeline (S3 adapter)
-- Supplier RFQ workflow, inventory, procurement, purchase orders
-- ERP adapters (Odoo/SAP/Dynamics) — interface only
-- AI-assisted BOQ enrichment layer (the deterministic matcher does the
-  real work; this would sit alongside it, never replace it)
-- Full commercial-rules UI (per-client/per-category margin overrides) —
-  the pricing engine supports it, the UI to configure it doesn't exist yet
-- Notifications (email/in-app), 2FA, currency live-rate API, global search
-
-Do not deploy this as-is to production without finishing the auth
-hardening (rate limiting, CSRF review, file upload validation) called out
-in spec Section 46 — none of that is implemented beyond password hashing
-and session handling.
+The script uses a disposable PostgreSQL container on localhost port 55439. It tests migrations and the core API workflow, including a workbook above 4.5 MB. The integration suite mocks session retrieval while exercising actual database permission checks and the credentials authorization callback. It does not replace browser or deployed Vercel verification.
 
 ## Getting started
 
-### Option A — Docker (recommended)
+### Option A — Local Docker PostgreSQL
 
 ```bash
-cp .env.example .env   # edit NEXTAUTH_SECRET at minimum
+cp .env.example .env   # set NEXTAUTH_SECRET, ADMIN_EMAIL and ADMIN_PASSWORD
 docker compose up
 ```
 
-The container automatically creates/synchronizes the database schema and seeds the demo account on first startup.
+Docker Compose supplies both `DATABASE_URL` and `DIRECT_URL` for its local
+PostgreSQL service. The container applies checked-in migrations. Bootstrap requires explicit ADMIN_EMAIL and ADMIN_PASSWORD; demo records require SEED_DEMO_DATA=true.
 
-Visit http://localhost:3000 and log in with:
+Visit http://localhost:3000 and sign in with your configured administrator credentials. There is no default password. Existing accounts are never reset by seeding or container startup.
 
-```
-email:    admin@tendering.local
-password: ChangeMe123!
-```
-
-(Sample credential — change immediately, this is seed data.)
-
-### Option B — Local Node + local Postgres
+### Option B — Local Node + Supabase PostgreSQL
 
 ```bash
-cp .env.example .env   # point DATABASE_URL at your local Postgres
+cp .env.example .env
+# Fill DATABASE_URL, DIRECT_URL, NEXTAUTH_SECRET, NEXTAUTH_URL, ADMIN_EMAIL and ADMIN_PASSWORD in .env
 npm install
-npx prisma db push
+npx prisma generate
+npx prisma migrate deploy
 npm run seed
 npm run dev
+```
+
+Open http://localhost:3000.
+
+`DATABASE_URL` must be the Supabase Transaction Pooler connection string,
+usually on port `6543`. For Prisma/serverless compatibility, use the options
+provided by Supabase; a typical form ends with
+`?pgbouncer=true&connection_limit=1`.
+
+`DIRECT_URL` must be the Supabase Session Pooler connection string, usually
+on port `5432`. Prisma uses this direct/session connection for migrations.
+Do not put either credential in source control.
+
+Supabase is PostgreSQL hosting only in this application. Authentication
+remains NextAuth and data access remains Prisma. The project intentionally
+does not require `NEXT_PUBLIC_SUPABASE_URL`, a Supabase publishable key, or
+Supabase browser/server SDK helpers.
+
+Redis is not currently referenced by application code. `REDIS_URL` is
+optional and the application does not fail when it is absent.
+
+## Deploy to Vercel + Supabase
+
+Set these Vercel environment variables for Production:
+
+```text
+DATABASE_URL=<Supabase Transaction Pooler URL, normally port 6543>
+DIRECT_URL=<Supabase Session Pooler URL, normally port 5432>
+NEXTAUTH_SECRET=<strong random secret>
+NEXTAUTH_URL=https://YOUR-VERCEL-DOMAIN.vercel.app
+NODE_ENV=production
+```
+
+Optional:
+
+```text
+REDIS_URL=<managed Redis URL, only if caching is added later>
+```
+
+Vercel runs `npm install` (which executes `prisma generate` through the
+`postinstall` script) followed by `next build`. Docker is not required at
+runtime on Vercel.
+
+Database migrations must never be triggered from an HTTP/browser request.
+Before releasing schema-dependent code, run the following deliberately from
+a trusted workstation or CI environment with `DIRECT_URL` configured:
+
+```bash
+npx prisma migrate deploy
+```
+
+For local schema development, create new migrations with:
+
+```bash
+npx prisma migrate dev --name <descriptive-name>
 ```
 
 ### Running tests
@@ -110,17 +121,9 @@ npm run dev
 npm test
 ```
 
-## Suggested next steps, in priority order
+## Scope and next steps
 
-1. Finish the panel configurator UI (drag-drop from catalog into
-   sections) — the API (`/api/panels/:id`) already supports it.
-2. Wire the enclosure sizing and thermal calculators alongside the
-   busbar one — same `EngineeringCalculation` table, same pattern.
-3. PDF technical/commercial offer generation via Puppeteer, using the
-   Excel export route as the data-shape reference.
-4. Document upload pipeline (S3-compatible) to unlock the tender
-   document management module.
-5. Supplier RFQ workflow and quote-vs-quote comparison UI.
+See [IMPLEMENTATION_REPORT.md](IMPLEMENTATION_REPORT.md) for completed, partial and deferred features, verification results, migration details, and deployment requirements.
 
 See `ARCHITECTURE.md` and `DATABASE.md` for more detail on how the
 pieces fit together.
@@ -129,4 +132,4 @@ pieces fit together.
 
 The pricing workflow now includes a Supplier Pricing screen at `/pricing` and an `Apply Best Available Prices` action on the BOQ screen. Supplier prices can be entered manually or imported from Excel using columns `Supplier`, `Manufacturer`, `Part Number`, `Price` and optional `Currency`, `Effective From`, `Effective To`.
 
-After component matching, applying prices uses the lowest active supplier price for the matched component and applies the best active supplier discount for that supplier. If no supplier price exists, the component catalog list price is used as a fallback. Applied price, currency, supplier/source and timestamp are persisted on the BOQ line.
+After engineer verification, applying prices compares discounted active supplier offers converted to the project currency using stored rates. It excludes offers without a usable conversion. If no supplier price exists, the component catalog list price is used as a fallback. Applied price, currency, supplier/source and timestamp are persisted on the BOQ line.

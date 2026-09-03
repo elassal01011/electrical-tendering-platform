@@ -47,10 +47,26 @@ const WEIGHTS = {
   voltage: 5,
 };
 
-export function scoreComponent(spec: ParsedSpec, candidate: CandidateComponent): MatchResult {
+export function scoreComponent(
+  spec: ParsedSpec,
+  candidate: CandidateComponent,
+): MatchResult {
   let score = 0;
   const reasons: string[] = [];
   const safetyFlags: string[] = [];
+  for (const key of [
+    "currentA",
+    "voltageV",
+    "breakingCapacityKA",
+    "poles",
+  ] as const) {
+    if (spec[key] != null && candidate[key] == null) {
+      safetyFlags.push(`MISSING_${key.toUpperCase()}`);
+      reasons.push(
+        `Required ${key} cannot be verified: the catalog value is missing.`,
+      );
+    }
+  }
   const maxScore = Object.values(WEIGHTS).reduce((a, b) => a + b, 0);
 
   // Category — hard requirement. No category match = very low score regardless of rest.
@@ -58,17 +74,30 @@ export function scoreComponent(spec: ParsedSpec, candidate: CandidateComponent):
     score += WEIGHTS.category;
     reasons.push(`Category matches (${spec.category})`);
   } else if (spec.category) {
-    reasons.push(`Category mismatch: required ${spec.category}, candidate is ${candidate.category}`);
-    return { componentId: candidate.id, score: 0, reasons, safetyFlags: ["CATEGORY_MISMATCH"], safe: false, status: "NO_MATCH" };
+    reasons.push(
+      `Category mismatch: required ${spec.category}, candidate is ${candidate.category}`,
+    );
+    return {
+      componentId: candidate.id,
+      score: 0,
+      reasons,
+      safetyFlags: ["CATEGORY_MISMATCH"],
+      safe: false,
+      status: "NO_MATCH",
+    };
   }
 
   // Manufacturer
   if (spec.manufacturer) {
-    if (candidate.manufacturer.toLowerCase() === spec.manufacturer.toLowerCase()) {
+    if (
+      candidate.manufacturer.toLowerCase() === spec.manufacturer.toLowerCase()
+    ) {
       score += WEIGHTS.manufacturer;
       reasons.push(`Manufacturer matches (${spec.manufacturer})`);
     } else {
-      reasons.push(`Manufacturer differs (BOQ: ${spec.manufacturer}, candidate: ${candidate.manufacturer}) — shown as alternative`);
+      reasons.push(
+        `Manufacturer differs (BOQ: ${spec.manufacturer}, candidate: ${candidate.manufacturer}) — shown as alternative`,
+      );
     }
   } else {
     // No manufacturer specified in BOQ — don't penalize, but don't award either.
@@ -84,9 +113,13 @@ export function scoreComponent(spec: ParsedSpec, candidate: CandidateComponent):
       const overRatio = candidate.currentA / spec.currentA;
       const partial = Math.max(0, WEIGHTS.current * (1 - (overRatio - 1) * 2));
       score += partial;
-      reasons.push(`Candidate rated higher (${candidate.currentA}A vs required ${spec.currentA}A) — acceptable, review frame size`);
+      reasons.push(
+        `Candidate rated higher (${candidate.currentA}A vs required ${spec.currentA}A) — acceptable, review frame size`,
+      );
     } else {
-      reasons.push(`Candidate UNDER-rated (${candidate.currentA}A < required ${spec.currentA}A) — not a safe substitute`);
+      reasons.push(
+        `Candidate UNDER-rated (${candidate.currentA}A < required ${spec.currentA}A) — not a safe substitute`,
+      );
       safetyFlags.push("CURRENT_UNDERRATED");
     }
   }
@@ -97,7 +130,9 @@ export function scoreComponent(spec: ParsedSpec, candidate: CandidateComponent):
       score += WEIGHTS.poles;
       reasons.push(`Poles match (${spec.poles}P)`);
     } else {
-      reasons.push(`Poles differ (required ${spec.poles}P, candidate ${candidate.poles}P)`);
+      reasons.push(
+        `Poles differ (required ${spec.poles}P, candidate ${candidate.poles}P)`,
+      );
       safetyFlags.push("POLE_MISMATCH");
     }
   }
@@ -107,11 +142,11 @@ export function scoreComponent(spec: ParsedSpec, candidate: CandidateComponent):
     if (candidate.breakingCapacityKA >= spec.breakingCapacityKA) {
       score += WEIGHTS.breakingCapacity;
       reasons.push(
-        `Breaking capacity sufficient (${candidate.breakingCapacityKA}kA >= required ${spec.breakingCapacityKA}kA)`
+        `Breaking capacity sufficient (${candidate.breakingCapacityKA}kA >= required ${spec.breakingCapacityKA}kA)`,
       );
     } else {
       reasons.push(
-        `Breaking capacity INSUFFICIENT (${candidate.breakingCapacityKA}kA < required ${spec.breakingCapacityKA}kA) — do not select`
+        `Breaking capacity INSUFFICIENT (${candidate.breakingCapacityKA}kA < required ${spec.breakingCapacityKA}kA) — do not select`,
       );
       safetyFlags.push("BREAKING_CAPACITY_UNDERRATED");
     }
@@ -123,15 +158,29 @@ export function scoreComponent(spec: ParsedSpec, candidate: CandidateComponent):
       score += WEIGHTS.voltage;
       reasons.push(`Voltage matches (${spec.voltageV}V)`);
     } else if (candidate.voltageV < spec.voltageV) {
-      reasons.push(`Voltage UNDER-rated (${candidate.voltageV}V < required ${spec.voltageV}V)`);
+      reasons.push(
+        `Voltage UNDER-rated (${candidate.voltageV}V < required ${spec.voltageV}V)`,
+      );
       safetyFlags.push("VOLTAGE_UNDERRATED");
     }
   }
 
   const normalized = Math.round((score / maxScore) * 100 * 100) / 100;
   const safe = safetyFlags.length === 0;
-  const status = !safe || normalized < 60 ? "NO_MATCH" : normalized < 80 ? "ENGINEER_REVIEW" : "AUTO_MATCHED";
-  return { componentId: candidate.id, score: normalized, reasons, safetyFlags, safe, status };
+  const status =
+    !safe || normalized < 60
+      ? "NO_MATCH"
+      : normalized < 80
+        ? "ENGINEER_REVIEW"
+        : "AUTO_MATCHED";
+  return {
+    componentId: candidate.id,
+    score: normalized,
+    reasons,
+    safetyFlags,
+    safe,
+    status,
+  };
 }
 
 /**
@@ -141,8 +190,13 @@ export function scoreComponent(spec: ParsedSpec, candidate: CandidateComponent):
  * their low score — they are NEVER auto-selected by
  * autoSelectBestMatch below.
  */
-export function rankCandidates(spec: ParsedSpec, candidates: CandidateComponent[]): MatchResult[] {
-  return candidates.map((c) => scoreComponent(spec, c)).sort((a, b) => b.score - a.score);
+export function rankCandidates(
+  spec: ParsedSpec,
+  candidates: CandidateComponent[],
+): MatchResult[] {
+  return candidates
+    .map((c) => scoreComponent(spec, c))
+    .sort((a, b) => b.score - a.score);
 }
 
 const AUTO_SELECT_THRESHOLD = 70;

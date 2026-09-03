@@ -34,8 +34,13 @@ services:
       - "3000:3000"
     environment:
       DATABASE_URL: "postgresql://tendering:tendering@postgres:5432/tendering_platform?schema=public"
+      DIRECT_URL: "postgresql://tendering:tendering@postgres:5432/tendering_platform?schema=public"
       REDIS_URL: "redis://redis:6379"
-      NEXTAUTH_SECRET: "dev-only-secret-change-me"
+      NEXTAUTH_SECRET: "${NEXTAUTH_SECRET:?Set NEXTAUTH_SECRET in .env}"
+      ADMIN_EMAIL: "${ADMIN_EMAIL:-}"
+      ADMIN_PASSWORD: "${ADMIN_PASSWORD:-}"
+      SEED_DEMO_DATA: "${SEED_DEMO_DATA:-false}"
+      MAX_EXCEL_UPLOAD_MB: "${MAX_EXCEL_UPLOAD_MB:-10}"
       NEXTAUTH_URL: "http://localhost:3000"
     volumes:
       - .:/app

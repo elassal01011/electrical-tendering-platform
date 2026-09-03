@@ -1,5 +1,8 @@
 import { describe, it, expect } from "vitest";
-import { calculateBusbar, suggestStandardBarSize } from "../../src/lib/services/calculations/busbarCalculator";
+import {
+  calculateBusbar,
+  suggestStandardBarSize,
+} from "../../src/lib/services/calculations/busbarCalculator";
 
 describe("busbar calculator (spec Section 16)", () => {
   it("computes required area = current per bar / current density", () => {
@@ -30,13 +33,21 @@ describe("busbar calculator (spec Section 16)", () => {
 
   it("rejects invalid inputs", () => {
     expect(() =>
-      calculateBusbar({ ratedCurrentA: 0, currentDensityAPerMm2: 1.6, numberOfBars: 1, lengthM: 1, copperDensityKgPerM3: 8960 })
+      calculateBusbar({
+        ratedCurrentA: 0,
+        currentDensityAPerMm2: 1.6,
+        numberOfBars: 1,
+        lengthM: 1,
+        copperDensityKgPerM3: 8960,
+      }),
     ).toThrow();
   });
 
   it("suggests smallest standard bar size that meets required area", () => {
     const suggestion = suggestStandardBarSize(480);
     expect(suggestion).not.toBeNull();
-    expect(suggestion!.width * suggestion!.thickness).toBeGreaterThanOrEqual(480);
+    expect(suggestion!.width * suggestion!.thickness).toBeGreaterThanOrEqual(
+      480,
+    );
   });
 });

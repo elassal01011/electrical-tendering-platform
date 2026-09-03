@@ -26,8 +26,18 @@ describe("pricing engine formulas (spec Section 13)", () => {
     // This is the value persisted by BOQ apply-prices after an imported SupplierPrice is selected.
     const importedSupplierUnitPrice = 735;
     const summary = computePricingSummary({
-      items: [{ listPrice: importedSupplierUnitPrice, supplierDiscountPct: 0, quantity: 4 }],
-      laborHours: 2, hourlyRate: 100, overheadPct: 10, mode: "MARKUP", markupPct: 20,
+      items: [
+        {
+          listPrice: importedSupplierUnitPrice,
+          supplierDiscountPct: 0,
+          quantity: 4,
+        },
+      ],
+      laborHours: 2,
+      hourlyRate: 100,
+      overheadPct: 10,
+      mode: "MARKUP",
+      markupPct: 20,
     });
     expect(summary.materialCost).toBe(2940);
     expect(summary.laborCost).toBe(200);

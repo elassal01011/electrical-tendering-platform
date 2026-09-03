@@ -74,8 +74,7 @@ npx prisma migrate deploy                       # prod: applies pending migratio
 npx prisma studio                                # visual DB browser
 ```
 
-No migrations are checked into this repository yet — run
-`prisma migrate dev --name init` once against a real Postgres instance to
-generate the first one (this requires network access to fetch Prisma's
-query engine binaries, which wasn't available in the sandbox this project
-was built in — it will work normally in your environment or CI).
+Checked-in migrations under `prisma/migrations` are the database source of
+truth. Use `prisma migrate dev` to create migrations locally and
+`prisma migrate deploy` in CI or as a deliberate release step. Do not use
+`prisma db push` as a production deployment strategy.
