@@ -38,7 +38,8 @@ export default function Account() {
       <form className="card max-w-lg space-y-4" onSubmit={change}>
         <h2 className="font-semibold">Change password</h2>
         <p className="muted text-sm">
-          Use 12–72 characters. You will sign in again after saving.
+          Use 12–72 UTF-8 bytes (12–72 ASCII characters). You will sign in again
+          after saving.
         </p>
         {[
           ["currentPassword", "Current password"],
@@ -52,7 +53,7 @@ export default function Account() {
               name={name}
               type="password"
               required
-              minLength={name === "currentPassword" ? 1 : 12}
+              minLength={1}
               maxLength={72}
               autoComplete={
                 name === "currentPassword" ? "current-password" : "new-password"

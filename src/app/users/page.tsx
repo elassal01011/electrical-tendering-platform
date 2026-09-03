@@ -93,12 +93,14 @@ export default function Users() {
               </>
             )}
             <label>
-              {selected ? "Reset password (optional)" : "Initial password"}
+              {selected
+                ? "Reset password (optional, 12–72 UTF-8 bytes)"
+                : "Initial password (12–72 UTF-8 bytes)"}
               <input
                 type="password"
                 name="password"
                 className="input"
-                minLength={12}
+                minLength={1}
                 maxLength={72}
                 required={!selected}
                 autoComplete="new-password"

@@ -1,25 +1,20 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import bcrypt from "bcryptjs";
+import {
+  emailSchema,
+  hashPassword,
+  newPasswordSchema,
+  loginAttemptKey,
+} from "@/lib/auth/credentialPolicy";
 import { RoleName } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { requirePermission } from "@/lib/auth/apiGuard";
 import { apiError } from "@/lib/apiError";
 import { ExcelError } from "@/lib/services/excel/uploadPolicy";
 const schema = z.object({
-  email: z
-    .string()
-    .email()
-    .transform((s) => s.toLowerCase().trim()),
+  email: emailSchema,
   name: z.string().trim().min(1).max(120),
-  password: z
-    .string()
-    .min(12)
-    .max(72)
-    .refine(
-      (value) => Buffer.byteLength(value, "utf8") <= 72,
-      "Password must be no more than 72 UTF-8 bytes.",
-    ),
+  password: newPasswordSchema,
   role: z.nativeEnum(RoleName),
 });
 export async function GET() {
@@ -48,7 +43,7 @@ export async function POST(req: Request) {
     const g = await requirePermission("user.manage");
     if (g.error) return g.error;
     const input = schema.parse(await req.json()),
-      passwordHash = await bcrypt.hash(input.password, 12);
+      passwordHash = await hashPassword(input.password);
     const user = await prisma.$transaction(async (tx) => {
       const role = await tx.role.upsert({
         where: { name: input.role },
@@ -88,15 +83,7 @@ export async function PATCH(req: Request) {
         id: z.string().min(1),
         active: z.boolean().optional(),
         role: z.nativeEnum(RoleName).optional(),
-        password: z
-          .string()
-          .min(12)
-          .max(72)
-          .refine(
-            (value) => Buffer.byteLength(value, "utf8") <= 72,
-            "Password must be no more than 72 UTF-8 bytes.",
-          )
-          .optional(),
+        password: newPasswordSchema.optional(),
       })
       .parse(await req.json());
     if (input.id === g.userId)
@@ -104,10 +91,10 @@ export async function PATCH(req: Request) {
         "Use your account page to change your password. Ask another administrator to change your role or access.",
       );
     const hash = input.password
-      ? await bcrypt.hash(input.password, 12)
+      ? await hashPassword(input.password)
       : undefined;
     await prisma.$transaction(async (tx) => {
-      await tx.user.update({
+      const updatedUser = await tx.user.update({
         where: { id: input.id },
         data: {
           active: input.active,
@@ -115,6 +102,10 @@ export async function PATCH(req: Request) {
           sessionVersion: { increment: 1 },
         },
       });
+      if (hash)
+        await tx.loginAttempt.deleteMany({
+          where: { key: loginAttemptKey(updatedUser.email) },
+        });
       if (input.role) {
         const role = await tx.role.upsert({
           where: { name: input.role },

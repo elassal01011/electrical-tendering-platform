@@ -22,7 +22,7 @@ try {
   $env:VERIFY_DATABASE = 'true'
   npx prisma migrate deploy
   if ($LASTEXITCODE -ne 0) { throw 'Migration verification failed.' }
-  npx vitest run tests/integration/workflow.test.ts
+  npx vitest run tests/integration
   if ($LASTEXITCODE -ne 0) { throw 'Workflow verification failed.' }
   npx prisma migrate diff --from-url $env:DATABASE_URL --to-schema-datamodel prisma/schema.prisma --exit-code
   if ($LASTEXITCODE -ne 0) { throw 'Migration/schema drift detected.' }

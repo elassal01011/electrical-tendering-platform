@@ -48,6 +48,8 @@ PostgreSQL service. The container applies checked-in migrations. Bootstrap requi
 
 Visit http://localhost:3000 and sign in with your configured administrator credentials. There is no default password. Existing accounts are never reset by seeding or container startup.
 
+For login diagnosis and administrator recovery, see [AUTH_RECOVERY.md](AUTH_RECOVERY.md). Configure `DIRECT_URL`, `ADMIN_EMAIL` and `ADMIN_PASSWORD` in `.env`, then use `npm run check-admin` and `npm run reset-admin`. Changing `ADMIN_PASSWORD` alone does not change an existing account's password.
+
 ### Option B — Local Node + Supabase PostgreSQL
 
 ```bash

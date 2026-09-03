@@ -13,12 +13,13 @@ export default function LoginPage() {
     [help, setHelp] = useState(false);
   async function submit(e: React.FormEvent) {
     e.preventDefault();
+    if (busy) return;
     setBusy(true);
     setError("");
     try {
       const result = await signIn("credentials", {
         redirect: false,
-        email,
+        email: email.trim().toLowerCase(),
         password,
       });
       if (!result?.ok)
@@ -79,7 +80,7 @@ export default function LoginPage() {
         </p>
       </section>
       <section className="login-main">
-        <form onSubmit={submit} className="space-y-5">
+        <form onSubmit={submit} className="space-y-5" aria-busy={busy}>
           <div className="mb-8">
             <p className="eyebrow">YOUR WORKSPACE AWAITS</p>
             <h2>Welcome back</h2>
@@ -94,6 +95,7 @@ export default function LoginPage() {
               type="email"
               autoComplete="username"
               required
+              disabled={busy}
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               placeholder="you@company.com"
@@ -107,6 +109,7 @@ export default function LoginPage() {
                 type={show ? "text" : "password"}
                 autoComplete="current-password"
                 required
+                disabled={busy}
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
               />

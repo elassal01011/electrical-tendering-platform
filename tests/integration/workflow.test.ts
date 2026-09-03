@@ -2,6 +2,7 @@ import { afterAll, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
 import ExcelJS from "exceljs";
 import bcrypt from "bcryptjs";
+import type { User } from "@prisma/client";
 import { randomBytes } from "node:crypto";
 const auth = vi.hoisted(() => ({ session: null as any }));
 vi.mock("next-auth", () => ({
@@ -55,7 +56,7 @@ describe.skipIf(!enabled)(
     it("imports a large workbook, reviews engineering, prices, approves, revises and protects documents", async () => {
       const nonce = Date.now();
       const hash = await bcrypt.hash("Verification-only-password", 10);
-      const users = [];
+      const users: User[] = [];
       for (const name of [
         "SUPER_ADMIN",
         "GENERAL_MANAGER",

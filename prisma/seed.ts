@@ -4,11 +4,10 @@ import {
   ComponentCategory,
   PartyType,
 } from "@prisma/client";
-import bcrypt from "bcryptjs";
+import { bootstrapAdmin, BOOTSTRAP_HELP } from "../src/lib/auth/admin";
+import { runAdminCommand } from "../scripts/admin-cli";
 
-const prisma = new PrismaClient();
-
-async function main() {
+async function main(prisma: PrismaClient) {
   console.log("Seeding roles...");
   for (const roleName of Object.values(RoleName)) {
     await prisma.role.upsert({
@@ -18,36 +17,14 @@ async function main() {
     });
   }
 
-  console.log("Seeding admin user...");
-  const adminEmail = process.env.ADMIN_EMAIL?.trim().toLowerCase();
-  const adminPassword = process.env.ADMIN_PASSWORD;
-  if (
-    !adminEmail ||
-    !adminPassword ||
-    adminPassword.length < 12 ||
-    Buffer.byteLength(adminPassword, "utf8") > 72
-  )
-    throw new Error(
-      "Set ADMIN_EMAIL and a unique ADMIN_PASSWORD of 12–72 characters before seeding.",
+  const admin = await bootstrapAdmin(prisma, process.env);
+  if (!admin) console.log(BOOTSTRAP_HELP);
+  else
+    console.log(
+      admin.created
+        ? "Administrator created with SUPER_ADMIN access."
+        : "Administrator active with SUPER_ADMIN access. Existing password preserved; use npm run reset-admin to change it.",
     );
-  const adminPasswordHash = await bcrypt.hash(adminPassword, 12);
-  const admin = await prisma.user.upsert({
-    where: { email: adminEmail },
-    update: {},
-    create: {
-      email: adminEmail,
-      passwordHash: adminPasswordHash,
-      name: "Platform Admin",
-    },
-  });
-  const superAdminRole = await prisma.role.findUniqueOrThrow({
-    where: { name: "SUPER_ADMIN" },
-  });
-  await prisma.userRole.upsert({
-    where: { userId_roleId: { userId: admin.id, roleId: superAdminRole.id } },
-    update: {},
-    create: { userId: admin.id, roleId: superAdminRole.id },
-  });
 
   if (process.env.SEED_DEMO_DATA !== "true") return;
   console.log("Seeding sample client / consultant (SAMPLE DATA)...");
@@ -407,16 +384,7 @@ async function main() {
   );
 
   console.log("\nSeed complete.");
-  console.log(
-    "Seed complete. Sign in with your configured ADMIN_EMAIL and ADMIN_PASSWORD.",
-  );
+  console.log("Seed complete. Existing account passwords were preserved.");
 }
 
-main()
-  .catch((e) => {
-    console.error(e);
-    process.exit(1);
-  })
-  .finally(async () => {
-    await prisma.$disconnect();
-  });
+void runAdminCommand(main);

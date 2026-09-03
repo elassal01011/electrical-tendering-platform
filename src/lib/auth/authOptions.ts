@@ -1,7 +1,6 @@
 import type { NextAuthOptions } from "next-auth";
 import CredentialsProvider from "next-auth/providers/credentials";
-import bcrypt from "bcryptjs";
-import { createHash } from "node:crypto";
+import { authorizeCredentials } from "./credentials";
 import { prisma } from "@/lib/db/prisma";
 
 export const authOptions: NextAuthOptions = {
@@ -14,43 +13,7 @@ export const authOptions: NextAuthOptions = {
         email: { label: "Email", type: "email" },
         password: { label: "Password", type: "password" },
       },
-      async authorize(credentials) {
-        if (
-          !credentials?.email ||
-          !credentials?.password ||
-          Buffer.byteLength(credentials.password, "utf8") > 72
-        )
-          return null;
-        const email = credentials.email.trim().toLowerCase();
-        const key = createHash("sha256").update(email).digest("hex");
-        const attempts = await prisma.$queryRaw<
-          { count: number }[]
-        >`INSERT INTO "LoginAttempt" ("key", "count", "expiresAt") VALUES (${key}, 1, NOW() + INTERVAL '15 minutes') ON CONFLICT ("key") DO UPDATE SET "count" = CASE WHEN "LoginAttempt"."expiresAt" < NOW() THEN 1 ELSE "LoginAttempt"."count" + 1 END, "expiresAt" = CASE WHEN "LoginAttempt"."expiresAt" < NOW() THEN NOW() + INTERVAL '15 minutes' ELSE "LoginAttempt"."expiresAt" END RETURNING "count"`;
-        if (attempts[0].count > 8) return null;
-
-        const accounts = await prisma.user.findMany({
-          where: { email: { equals: email, mode: "insensitive" } },
-          include: { roles: { include: { role: true } } },
-          take: 2,
-        });
-        const user = accounts.length === 1 ? accounts[0] : null;
-        if (!user || !user.active || user.deletedAt) return null;
-
-        const valid = await bcrypt.compare(
-          credentials.password,
-          user.passwordHash,
-        );
-        if (!valid) return null;
-        await prisma.loginAttempt.deleteMany({ where: { key } });
-
-        return {
-          id: user.id,
-          sessionVersion: user.sessionVersion,
-          email: user.email,
-          name: user.name,
-          roles: user.roles.map((r) => r.role.name),
-        };
-      },
+      authorize: (credentials) => authorizeCredentials(prisma, credentials),
     }),
   ],
   callbacks: {
