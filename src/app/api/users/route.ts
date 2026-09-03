@@ -6,6 +6,9 @@ import {
   newPasswordSchema,
   loginAttemptKey,
 } from "@/lib/auth/credentialPolicy";
+import { usernameSchema } from "@/lib/auth/signupPolicy";
+import { accountSelect } from "@/lib/auth/account";
+import { requireSameOrigin } from "@/lib/auth/http";
 import { RoleName } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { requirePermission } from "@/lib/auth/apiGuard";
@@ -13,6 +16,7 @@ import { apiError } from "@/lib/apiError";
 import { ExcelError } from "@/lib/services/excel/uploadPolicy";
 const schema = z.object({
   email: emailSchema,
+  username: usernameSchema.optional(),
   name: z.string().trim().min(1).max(120),
   password: newPasswordSchema,
   role: z.nativeEnum(RoleName),
@@ -23,17 +27,20 @@ export async function GET() {
     if (g.error) return g.error;
     const rows = await prisma.user.findMany({
       where: { deletedAt: null },
-      select: {
-        id: true,
-        email: true,
-        name: true,
-        active: true,
-        roles: { select: { role: { select: { name: true } } } },
-      },
+      select: { ...accountSelect, passwordHash: true },
       orderBy: { name: "asc" },
       take: 100,
     });
-    return NextResponse.json({ rows });
+    return NextResponse.json({
+      rows: rows.map(({ passwordHash, oauthAccounts, ...safe }) => ({
+        ...safe,
+        authMethod: oauthAccounts.some((a) => a.provider === "google")
+          ? passwordHash
+            ? "Google + password"
+            : "Google"
+          : "Password",
+      })),
+    });
   } catch (e) {
     return apiError(e, "users.list");
   }
@@ -42,6 +49,7 @@ export async function POST(req: Request) {
   try {
     const g = await requirePermission("user.manage");
     if (g.error) return g.error;
+    requireSameOrigin(req);
     const input = schema.parse(await req.json()),
       passwordHash = await hashPassword(input.password);
     const user = await prisma.$transaction(async (tx) => {
@@ -53,6 +61,7 @@ export async function POST(req: Request) {
       const row = await tx.user.create({
         data: {
           name: input.name,
+          username: input.username,
           email: input.email,
           passwordHash,
           roles: { create: { roleId: role.id } },
@@ -78,10 +87,12 @@ export async function PATCH(req: Request) {
   try {
     const g = await requirePermission("user.manage");
     if (g.error) return g.error;
+    requireSameOrigin(req);
     const input = z
       .object({
         id: z.string().min(1),
         active: z.boolean().optional(),
+        revokeSessions: z.boolean().optional(),
         role: z.nativeEnum(RoleName).optional(),
         password: newPasswordSchema.optional(),
       })
@@ -98,6 +109,7 @@ export async function PATCH(req: Request) {
         where: { id: input.id },
         data: {
           active: input.active,
+          ...(input.active !== undefined ? { approvalPending: false } : {}),
           passwordHash: hash,
           sessionVersion: { increment: 1 },
         },
@@ -117,19 +129,28 @@ export async function PATCH(req: Request) {
           data: { userId: input.id, roleId: role.id },
         });
       }
-      await tx.auditLog.create({
-        data: {
-          userId: g.userId,
-          action: "USER_ACCESS_CHANGED",
-          entity: "User",
-          entityId: input.id,
-          newValue: {
-            active: input.active ?? null,
-            role: input.role ?? null,
-            passwordReset: !!hash,
+      const actions = [
+        ...(input.active !== undefined
+          ? [input.active ? "USER_ACTIVATED" : "USER_DEACTIVATED"]
+          : []),
+        ...(input.role ? ["ROLE_CHANGED"] : []),
+        ...(hash ? ["PASSWORD_CHANGED"] : []),
+        ...(input.revokeSessions ? ["SESSIONS_REVOKED"] : []),
+      ];
+      for (const action of actions)
+        await tx.auditLog.create({
+          data: {
+            userId: g.userId,
+            action,
+            entity: "User",
+            entityId: input.id,
+            newValue: {
+              active: input.active ?? null,
+              role: input.role ?? null,
+              passwordReset: !!hash,
+            },
           },
-        },
-      });
+        });
     });
     return NextResponse.json({ success: true });
   } catch (e) {

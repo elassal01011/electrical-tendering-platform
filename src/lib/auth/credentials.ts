@@ -1,4 +1,5 @@
 import type { PrismaClient } from "@prisma/client";
+import { reserveAttempt } from "./rateLimit";
 import { randomUUID } from "node:crypto";
 import {
   comparePassword,
@@ -17,14 +18,30 @@ type FailureReason =
 
 export async function authorizeCredentials(
   prisma: PrismaClient,
-  credentials: { email?: string; password?: string } | undefined,
+  credentials:
+    | { identifier?: string; email?: string; password?: string }
+    | undefined,
 ) {
-  const email = normalizeEmail(credentials?.email ?? "");
-  const key = loginAttemptKey(email);
+  const email = normalizeEmail(
+    credentials?.identifier ?? credentials?.email ?? "",
+  );
+  let key = loginAttemptKey(email);
   const requestId = randomUUID();
-  const reject = (reason: FailureReason) => {
+  const reject = async (reason: FailureReason) => {
     // Never log the credentials, user record, or raw database exception.
     console.warn("auth.credentials", { reason, emailHash: key, requestId });
+    try {
+      await prisma.auditLog.create({
+        data: {
+          action: "LOGIN_FAILED",
+          entity: "Authentication",
+          entityId: key,
+          newValue: { reason, requestId },
+        },
+      });
+    } catch {
+      console.warn("auth.audit", { reason: "DATABASE_ERROR" });
+    }
     return null;
   };
   if (
@@ -35,37 +52,57 @@ export async function authorizeCredentials(
     return reject("INVALID_PASSWORD");
 
   try {
-    // Reserve an attempt atomically across server instances. Expired records start
-    // a new fixed window; requests during lockout never extend the old window.
-    const attempts = await prisma.$queryRaw<{ count: number }[]>`
-      INSERT INTO "LoginAttempt" ("key", "count", "expiresAt")
-      VALUES (${key}, 1, NOW() + ${LOGIN_WINDOW_MINUTES} * INTERVAL '1 minute')
-      ON CONFLICT ("key") DO UPDATE SET
-        "count" = CASE WHEN "LoginAttempt"."expiresAt" <= NOW() THEN 1
-          ELSE LEAST("LoginAttempt"."count"::bigint + 1, ${LOGIN_ATTEMPT_LIMIT + 1}) END,
-        "expiresAt" = CASE WHEN "LoginAttempt"."expiresAt" <= NOW()
-          THEN NOW() + ${LOGIN_WINDOW_MINUTES} * INTERVAL '1 minute'
-          ELSE "LoginAttempt"."expiresAt" END
-      RETURNING "count"`;
-    if (attempts[0].count > LOGIN_ATTEMPT_LIMIT) return reject("RATE_LIMITED");
-
     const accounts = await prisma.user.findMany({
-      where: { email: { equals: email, mode: "insensitive" } },
+      where: email.includes("@")
+        ? { email: { equals: email, mode: "insensitive" } }
+        : { username: { equals: email, mode: "insensitive" } },
       include: { roles: { include: { role: true } } },
       take: 2,
     });
+    // Both aliases consume the same canonical email budget, including legacy
+    // attempts created before username login was introduced.
+    if (accounts.length === 1) key = loginAttemptKey(accounts[0].email);
+    if (
+      !(await reserveAttempt(
+        prisma,
+        key,
+        LOGIN_ATTEMPT_LIMIT,
+        LOGIN_WINDOW_MINUTES,
+      ))
+    )
+      return reject("RATE_LIMITED");
     // Fail closed for legacy case-variant duplicates, just as the old provider did.
     if (accounts.length !== 1) return reject("USER_NOT_FOUND");
     const user = accounts[0];
     if (!user.active || user.deletedAt) return reject("USER_INACTIVE");
-    if (!(await comparePassword(credentials.password, user.passwordHash)))
+    if (
+      !user.passwordHash ||
+      !(await comparePassword(credentials.password, user.passwordHash))
+    )
       return reject("INVALID_PASSWORD");
-    await prisma.loginAttempt.deleteMany({ where: { key } });
+    await prisma.$transaction(async (tx) => {
+      await tx.loginAttempt.deleteMany({ where: { key } });
+      await tx.user.update({
+        where: { id: user.id },
+        data: { lastLoginAt: new Date() },
+      });
+      await tx.auditLog.create({
+        data: {
+          userId: user.id,
+          action: "LOGIN_SUCCESS",
+          entity: "User",
+          entityId: user.id,
+          newValue: { provider: "credentials" },
+        },
+      });
+    });
     return {
       id: user.id,
       sessionVersion: user.sessionVersion,
       email: user.email,
       name: user.name,
+      username: user.username,
+      image: user.image,
       roles: user.roles.map((r) => r.role.name),
     };
   } catch {

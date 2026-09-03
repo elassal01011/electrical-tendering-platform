@@ -34,5 +34,7 @@ export default withAuth(
 );
 // APIs perform their own fresh database/session permission check and return JSON 401/403.
 export const config = {
-  matcher: ["/((?!api/|login|_next/static|_next/image|favicon.ico).*)"],
+  matcher: [
+    "/((?!api/|login(?:/|$)|signup(?:/|$)|_next/static|_next/image|favicon.ico).*)",
+  ],
 };

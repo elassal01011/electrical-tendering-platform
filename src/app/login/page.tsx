@@ -1,5 +1,7 @@
 "use client";
-import { useState } from "react";
+import Link from "next/link";
+import { GoogleButton } from "@/components/auth/GoogleButton";
+import { useEffect, useState } from "react";
 import { signIn } from "next-auth/react";
 import { useRouter } from "next/navigation";
 import { Brand } from "@/components/Brand";
@@ -10,7 +12,21 @@ export default function LoginPage() {
     [show, setShow] = useState(false),
     [error, setError] = useState(""),
     [busy, setBusy] = useState(false),
-    [help, setHelp] = useState(false);
+    [help, setHelp] = useState(false),
+    [notice, setNotice] = useState("");
+  useEffect(() => {
+    const query = new URLSearchParams(window.location.search);
+    if (query.has("pending"))
+      setNotice(
+        "Your E-SOLUTIONS account has been created and is awaiting administrator approval.",
+      );
+    else if (query.has("registered"))
+      setNotice("Account created successfully. Please sign in.");
+    if (query.has("error"))
+      setError(
+        "Unable to sign in. Check your account access or try another sign-in method.",
+      );
+  }, []);
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     if (busy) return;
@@ -19,7 +35,7 @@ export default function LoginPage() {
     try {
       const result = await signIn("credentials", {
         redirect: false,
-        email: email.trim().toLowerCase(),
+        identifier: email.trim().toLowerCase(),
         password,
       });
       if (!result?.ok)
@@ -89,16 +105,16 @@ export default function LoginPage() {
             </p>
           </div>
           <label className="block">
-            Work email
+            Email or username
             <input
               className="input"
-              type="email"
+              type="text"
               autoComplete="username"
               required
               disabled={busy}
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              placeholder="you@company.com"
+              placeholder="Email address or username"
             />
           </label>
           <label className="block">
@@ -135,6 +151,11 @@ export default function LoginPage() {
               Contact your company administrator to reset your account password.
             </p>
           )}
+          {notice && (
+            <p className="success-box" role="status">
+              {notice}
+            </p>
+          )}
           {error && (
             <p className="error-box" role="alert">
               {error}
@@ -143,6 +164,13 @@ export default function LoginPage() {
           <button className="btn-primary w-full py-3" disabled={busy}>
             {busy ? "Signing in…" : "Sign in to workspace →"}
           </button>
+          <GoogleButton disabled={busy} />
+          <p className="text-center text-sm muted">
+            New to E-SOLUTIONS?{" "}
+            <Link href="/signup" className="font-semibold">
+              Create account
+            </Link>
+          </p>
           <p className="muted pt-5 text-center text-xs">
             Secure access for your engineering and commercial teams.
           </p>

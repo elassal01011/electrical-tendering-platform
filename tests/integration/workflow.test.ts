@@ -70,7 +70,7 @@ describe.skipIf(!enabled)(
         users.push(
           await prisma.user.create({
             data: {
-              email: name + nonce + "@example.test",
+              email: name.toLowerCase() + nonce + "@example.test",
               name,
               passwordHash: hash,
               roles: { create: { roleId: role.id } },

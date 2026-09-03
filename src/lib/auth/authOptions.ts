@@ -1,27 +1,96 @@
 import type { NextAuthOptions } from "next-auth";
 import CredentialsProvider from "next-auth/providers/credentials";
+import GoogleProvider from "next-auth/providers/google";
+import { signInGoogle } from "./google";
+import { safeAuthRedirect } from "./signupPolicy";
 import { authorizeCredentials } from "./credentials";
 import { prisma } from "@/lib/db/prisma";
 
 export const authOptions: NextAuthOptions = {
   session: { strategy: "jwt", maxAge: 8 * 60 * 60 },
-  pages: { signIn: "/login" },
+  pages: { signIn: "/login", error: "/login" },
   providers: [
     CredentialsProvider({
       name: "Credentials",
       credentials: {
+        identifier: { label: "Email or username", type: "text" },
         email: { label: "Email", type: "email" },
         password: { label: "Password", type: "password" },
       },
       authorize: (credentials) => authorizeCredentials(prisma, credentials),
     }),
+    ...(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET
+      ? [
+          GoogleProvider({
+            clientId: process.env.GOOGLE_CLIENT_ID,
+            clientSecret: process.env.GOOGLE_CLIENT_SECRET,
+            authorization: {
+              params: {
+                scope: "openid email profile",
+                prompt: "select_account",
+              },
+            },
+          }),
+        ]
+      : []),
   ],
   callbacks: {
-    async jwt({ token, user }) {
+    async signIn({ user, account, profile }) {
+      if (account?.provider !== "google")
+        return account?.provider === "credentials";
+      try {
+        const result = await signInGoogle(
+          prisma,
+          profile,
+          account.providerAccountId,
+        );
+        if (result.status === "allowed") {
+          Object.assign(user, result.user);
+          return true;
+        }
+        await prisma.auditLog.create({
+          data: {
+            action: "LOGIN_FAILED",
+            entity: "Authentication",
+            entityId: "google",
+            newValue: {
+              reason:
+                result.status === "pending"
+                  ? "APPROVAL_PENDING"
+                  : "GOOGLE_ACCESS_DENIED",
+            },
+          },
+        });
+        return result.status === "pending" ? "/login?pending=1" : false;
+      } catch {
+        console.error("auth.google", { reason: "GOOGLE_SIGNIN_FAILED" });
+        return false;
+      }
+    },
+    async redirect({ url, baseUrl }) {
+      return safeAuthRedirect(url, baseUrl);
+    },
+    async jwt({ token, user, trigger }) {
       if (user) {
         token.id = user.id;
         token.sessionVersion = user.sessionVersion;
         token.roles = user.roles;
+        token.username = user.username;
+        token.picture = user.image;
+      }
+      if (trigger === "update" && token.id) {
+        const current = await prisma.user.findUnique({
+          where: { id: token.id },
+        });
+        if (
+          current?.active &&
+          !current.deletedAt &&
+          current.sessionVersion === token.sessionVersion
+        ) {
+          token.name = current.name;
+          token.username = current.username;
+          token.picture = current.image;
+        }
       }
       return token;
     },
@@ -30,6 +99,8 @@ export const authOptions: NextAuthOptions = {
         session.user.id = token.id;
         session.user.sessionVersion = token.sessionVersion;
         session.user.roles = token.roles;
+        session.user.username = token.username;
+        session.user.image = token.picture;
       }
       return session;
     },

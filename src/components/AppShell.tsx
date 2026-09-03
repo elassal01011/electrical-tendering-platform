@@ -5,6 +5,7 @@ import { useSession, signOut } from "next-auth/react";
 import { useEffect, useState } from "react";
 import { Brand, BrandProvider } from "./Brand";
 import { hasPermission } from "@/lib/auth/permissions";
+import { Avatar } from "./Avatar";
 import { CommandPalette } from "./CommandPalette";
 const navigation = [
   [
@@ -88,7 +89,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }, [path]);
   return (
     <BrandProvider>
-      {path === "/login" ? (
+      {path === "/login" || path === "/signup" ? (
         children
       ) : (
         <div className={"app-shell " + (collapsed ? "is-collapsed" : "")}>
@@ -205,9 +206,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               </select>
               <details className="user-menu">
                 <summary>
-                  <span className="avatar">
-                    {session?.user.name?.slice(0, 1) || "U"}
-                  </span>
+                  <Avatar
+                    name={session?.user.name}
+                    image={session?.user.image}
+                  />
                   <span className="hidden lg:inline">
                     {session?.user.name || "Account"}
                   </span>

@@ -23,6 +23,7 @@ datasource db {
 // ---------------------------------------------------------------------------
 
 enum RoleName {
+  E_SOLUTIONS_USER
   SUPER_ADMIN
   GENERAL_MANAGER
   TENDERING_MANAGER
@@ -42,7 +43,13 @@ enum RoleName {
 model User {
   id           String     @id @default(cuid())
   email        String     @unique
-  passwordHash String
+  username     String?    @unique
+  passwordHash String?
+  image        String?
+  emailVerified DateTime?
+  lastLoginAt  DateTime?
+  approvalPending Boolean @default(false)
+  registrationMethod String @default("admin")
   sessionVersion Int @default(0)
   name         String
   active       Boolean    @default(true)
@@ -55,6 +62,20 @@ model User {
   auditLogs        AuditLog[]
   quoteRevisions   QuoteRevision[]
   notifications    Notification[]
+  oauthAccounts OAuthAccount[]
+}
+
+// Identity links only. OAuth access/refresh tokens are never persisted.
+model OAuthAccount {
+  id String @id @default(cuid())
+  userId String
+  provider String
+  providerAccountId String
+  createdAt DateTime @default(now())
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@unique([userId, provider])
 }
 
 model ExcelUpload {

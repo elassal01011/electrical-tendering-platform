@@ -148,7 +148,7 @@ describe("NextAuth credentials", () => {
       expect(output).not.toContain("private-host");
       expect(db.loginAttempt.deleteMany).not.toHaveBeenCalled();
       if (reason === "RATE_LIMITED")
-        expect(db.user.findMany).not.toHaveBeenCalled();
+        expect(db.$transaction).not.toHaveBeenCalled();
     },
   );
   it("rejects a soft-deleted account", async () => {

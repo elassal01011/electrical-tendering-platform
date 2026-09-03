@@ -2,6 +2,7 @@
 import { useEffect, useState } from "react";
 import { requestJson } from "@/lib/client/request";
 import { PageHeader, DataTable, LoadingSkeleton } from "@/components/ui";
+import { Avatar } from "@/components/Avatar";
 import { ROLE_PERMISSIONS } from "@/lib/auth/permissions";
 export default function Users() {
   const [rows, setRows] = useState<any[] | null>(null),
@@ -41,6 +42,22 @@ export default function Users() {
       setNotice(
         "User access saved. Existing sessions are revoked when access changes.",
       );
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function revoke(id: string) {
+    if (busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      await requestJson("/api/users", {
+        method: "PATCH",
+        body: JSON.stringify({ id, revokeSessions: true }),
+      });
+      setNotice("User sessions revoked.");
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -87,6 +104,17 @@ export default function Users() {
                   <input required name="name" className="input" />
                 </label>
                 <label>
+                  Username
+                  <input
+                    required
+                    name="username"
+                    className="input"
+                    minLength={3}
+                    maxLength={30}
+                    pattern="[A-Za-z0-9_.]+"
+                  />
+                </label>
+                <label>
                   Email
                   <input required type="email" name="email" className="input" />
                 </label>
@@ -129,7 +157,9 @@ export default function Users() {
                   defaultValue={String(selected.active)}
                 >
                   <option value="true">Active</option>
-                  <option value="false">Disabled</option>
+                  <option value="false">
+                    {selected.approvalPending ? "Pending approval" : "Disabled"}
+                  </option>
                 </select>
               </label>
             )}
@@ -153,13 +183,44 @@ export default function Users() {
         <LoadingSkeleton />
       ) : (
         <div className="card">
-          <DataTable headers={["Name", "Email", "Roles", "Status", ""]}>
+          <DataTable
+            headers={[
+              "Name",
+              "Username",
+              "Email",
+              "Roles",
+              "Sign-in",
+              "Status",
+              "Created",
+              "Last login",
+              "",
+            ]}
+          >
             {rows.map((u) => (
               <tr key={u.id}>
-                <td>{u.name}</td>
+                <td>
+                  <span className="flex items-center gap-2">
+                    <Avatar name={u.name} image={u.image} />
+                    {u.name}
+                  </span>
+                </td>
+                <td>{u.username || "�"}</td>
                 <td>{u.email}</td>
                 <td>{u.roles.map((r: any) => r.role.name).join(", ")}</td>
-                <td>{u.active ? "Active" : "Disabled"}</td>
+                <td>{u.authMethod}</td>
+                <td>
+                  {u.active
+                    ? "Active"
+                    : u.approvalPending
+                      ? "Pending approval"
+                      : "Disabled"}
+                </td>
+                <td>{new Date(u.createdAt).toLocaleDateString()}</td>
+                <td>
+                  {u.lastLoginAt
+                    ? new Date(u.lastLoginAt).toLocaleString()
+                    : "Never"}
+                </td>
                 <td>
                   <button
                     className="btn-secondary"
@@ -168,7 +229,14 @@ export default function Users() {
                       setAdd(false);
                     }}
                   >
-                    Edit access
+                    {u.approvalPending ? "Review / approve" : "Edit access"}
+                  </button>
+                  <button
+                    className="btn-secondary ml-2"
+                    disabled={busy}
+                    onClick={() => revoke(u.id)}
+                  >
+                    Revoke sessions
                   </button>
                 </td>
               </tr>
