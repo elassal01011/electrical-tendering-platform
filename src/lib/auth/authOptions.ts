@@ -1,6 +1,10 @@
 import type { NextAuthOptions } from "next-auth";
 import CredentialsProvider from "next-auth/providers/credentials";
 import GoogleProvider from "next-auth/providers/google";
+import {
+  GoogleDiagnostics,
+  googleDiagnosticContexts,
+} from "./googleDiagnostics";
 import { signInGoogle } from "./google";
 import { safeAuthRedirect } from "./signupPolicy";
 import { authorizeCredentials } from "./credentials";
@@ -38,16 +42,22 @@ export const authOptions: NextAuthOptions = {
     async signIn({ user, account, profile }) {
       if (account?.provider !== "google")
         return account?.provider === "credentials";
+      const diagnostics = new GoogleDiagnostics(profile, account);
       try {
         const result = await signInGoogle(
           prisma,
           profile,
           account.providerAccountId,
+          diagnostics,
         );
         if (result.status === "allowed") {
+          diagnostics.start("SESSION_CREATE", "sign_in_user_projection");
           Object.assign(user, result.user);
+          googleDiagnosticContexts.set(user, diagnostics);
+          diagnostics.complete();
           return true;
         }
+        diagnostics.start("AUDIT_WRITE", "LOGIN_FAILED");
         await prisma.auditLog.create({
           data: {
             action: "LOGIN_FAILED",
@@ -62,37 +72,50 @@ export const authOptions: NextAuthOptions = {
           },
         });
         return result.status === "pending" ? "/login?pending=1" : false;
-      } catch {
-        console.error("auth.google", { reason: "GOOGLE_SIGNIN_FAILED" });
+      } catch (error) {
+        diagnostics.failed(error);
         return false;
       }
     },
     async redirect({ url, baseUrl }) {
       return safeAuthRedirect(url, baseUrl);
     },
-    async jwt({ token, user, trigger }) {
-      if (user) {
-        token.id = user.id;
-        token.sessionVersion = user.sessionVersion;
-        token.roles = user.roles;
-        token.username = user.username;
-        token.picture = user.image;
-      }
-      if (trigger === "update" && token.id) {
-        const current = await prisma.user.findUnique({
-          where: { id: token.id },
-        });
-        if (
-          current?.active &&
-          !current.deletedAt &&
-          current.sessionVersion === token.sessionVersion
-        ) {
-          token.name = current.name;
-          token.username = current.username;
-          token.picture = current.image;
+    async jwt({ token, user, trigger, account, profile }) {
+      const diagnostics = user ? googleDiagnosticContexts.get(user) : undefined;
+      const googleContext =
+        diagnostics ||
+        (account?.provider === "google"
+          ? new GoogleDiagnostics(profile ?? user, account)
+          : undefined);
+      googleContext?.start("SESSION_CREATE", "jwt_callback");
+      try {
+        if (user) {
+          token.id = user.id;
+          token.sessionVersion = user.sessionVersion;
+          token.roles = user.roles;
+          token.username = user.username;
+          token.picture = user.image;
         }
+        if (trigger === "update" && token.id) {
+          const current = await prisma.user.findUnique({
+            where: { id: token.id },
+          });
+          if (
+            current?.active &&
+            !current.deletedAt &&
+            current.sessionVersion === token.sessionVersion
+          ) {
+            token.name = current.name;
+            token.username = current.username;
+            token.picture = current.image;
+          }
+        }
+        googleContext?.complete();
+        return token;
+      } catch (error) {
+        googleContext?.failed(error);
+        throw error;
       }
-      return token;
     },
     async session({ session, token }) {
       if (session.user) {

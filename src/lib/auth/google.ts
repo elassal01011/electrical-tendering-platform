@@ -1,6 +1,7 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { z } from "zod";
 import { signupSettings } from "./registration";
+import { GoogleDiagnostics } from "./googleDiagnostics";
 import { loginAttemptKey } from "./credentialPolicy";
 
 const googleProfile = z.object({
@@ -24,7 +25,9 @@ export function googleImage(value?: string) {
 export async function availableGoogleUsername(
   db: Prisma.TransactionClient,
   name: string,
+  diagnostics?: GoogleDiagnostics,
 ) {
+  diagnostics?.start("USER_LOOKUP", "username_allocation");
   const base = name
     .toLowerCase()
     .replace(/[^a-z0-9_.]+/g, ".")
@@ -50,15 +53,41 @@ export async function signInGoogle(
   db: PrismaClient,
   rawProfile: unknown,
   providerAccountId: string,
+  diagnostics = new GoogleDiagnostics(rawProfile),
 ) {
+  diagnostics.start("GOOGLE_PROFILE_VALIDATION");
   const profile = googleProfile.safeParse(rawProfile);
-  if (!profile.success || profile.data.sub !== providerAccountId)
+  diagnostics.complete();
+  diagnostics.start("GOOGLE_EMAIL_VERIFICATION");
+  if (!profile.success || profile.data.sub !== providerAccountId) {
+    const invalidProfile =
+      !profile.success &&
+      profile.error.issues.some((issue) => issue.path[0] !== "email_verified");
+    if (invalidProfile || profile.success)
+      diagnostics.start("GOOGLE_PROFILE_VALIDATION");
+    diagnostics.denied(
+      invalidProfile
+        ? "GOOGLE_PROFILE_INVALID"
+        : profile.success
+          ? "GOOGLE_SUBJECT_MISMATCH"
+          : "GOOGLE_EMAIL_NOT_VERIFIED",
+    );
     return { status: "denied" as const };
+  }
+  diagnostics.complete();
   const data = profile.data;
   for (let retry = 0; retry < 5; retry++) {
+    diagnostics.attempt = retry + 1;
+    diagnostics.userExists =
+      diagnostics.userActive =
+      diagnostics.approvalPending =
+      diagnostics.oauthAccountExists =
+        null;
+    diagnostics.start("OAUTH_ACCOUNT_LOOKUP", "transaction_start");
     try {
       return await db.$transaction(
         async (tx) => {
+          diagnostics.start("OAUTH_ACCOUNT_LOOKUP", "google_subject");
           const linked = await tx.oAuthAccount.findUnique({
             where: {
               provider_providerAccountId: {
@@ -70,26 +99,52 @@ export async function signInGoogle(
               user: { include: { roles: { include: { role: true } } } },
             },
           });
+          diagnostics.oauthAccountExists = !!linked;
+          if (linked) diagnostics.observeUser(linked.user);
+          diagnostics.complete();
           let user = linked?.user;
           if (!user) {
+            diagnostics.start("USER_LOOKUP", "normalized_email");
             const matches = await tx.user.findMany({
               where: { email: { equals: data.email, mode: "insensitive" } },
               include: { roles: { include: { role: true } } },
               take: 2,
             });
-            if (matches.length > 1) return { status: "denied" as const };
+            diagnostics.observeUser(matches[0]);
+            diagnostics.complete();
+            if (matches.length > 1) {
+              diagnostics.denied("DUPLICATE_EMAIL_ACCOUNTS");
+              return { status: "denied" as const };
+            }
             user = matches[0];
           }
           const isNew = !user;
-          if (user && (!user.active || user.deletedAt))
+          if (user && (!user.active || user.deletedAt)) {
+            diagnostics.denied(
+              user.deletedAt
+                ? "USER_DELETED"
+                : user.approvalPending
+                  ? "APPROVAL_PENDING"
+                  : "USER_INACTIVE",
+            );
             return {
               status:
                 user.approvalPending && !user.deletedAt
                   ? ("pending" as const)
                   : ("denied" as const),
             };
+          }
           if (!user) {
+            diagnostics.start(
+              "ROLE_ASSIGNMENT",
+              "signup_role_and_approval_policy",
+            );
             const settings = await signupSettings(tx);
+            diagnostics.complete();
+            diagnostics.start(
+              "NEW_GOOGLE_USER_CREATE",
+              "user_create_with_role",
+            );
             user = await tx.user.create({
               data: {
                 email: data.email,
@@ -98,7 +153,15 @@ export async function signInGoogle(
                 username: await availableGoogleUsername(
                   tx,
                   data.email.split("@")[0],
-                ),
+                  diagnostics,
+                ).then((username) => {
+                  diagnostics.complete();
+                  diagnostics.start(
+                    "NEW_GOOGLE_USER_CREATE",
+                    "user_create_with_role",
+                  );
+                  return username;
+                }),
                 image: googleImage(data.picture),
                 emailVerified: new Date(),
                 active: !settings.approval,
@@ -108,6 +171,9 @@ export async function signInGoogle(
               },
               include: { roles: { include: { role: true } } },
             });
+            diagnostics.observeUser(user);
+            diagnostics.complete();
+            diagnostics.start("AUDIT_WRITE", "GOOGLE_SIGNUP");
             await tx.auditLog.create({
               data: {
                 userId: user.id,
@@ -119,14 +185,29 @@ export async function signInGoogle(
           }
           if (!linked) {
             // One Google identity per user. A changed email cannot transfer a link.
+            diagnostics.start(
+              "EXISTING_ACCOUNT_LINK",
+              "check_existing_google_identity",
+            );
+            diagnostics.start(
+              "OAUTH_ACCOUNT_LOOKUP",
+              "existing_user_google_identity",
+            );
             if (
               await tx.oAuthAccount.findUnique({
                 where: {
                   userId_provider: { userId: user.id, provider: "google" },
                 },
               })
-            )
+            ) {
+              diagnostics.oauthAccountExists = true;
+              diagnostics.complete();
+              diagnostics.denied("GOOGLE_ACCOUNT_ALREADY_LINKED");
               return { status: "denied" as const };
+            }
+            diagnostics.oauthAccountExists = false;
+            diagnostics.complete();
+            diagnostics.start("OAUTH_ACCOUNT_CREATE");
             await tx.oAuthAccount.create({
               data: {
                 userId: user.id,
@@ -134,6 +215,8 @@ export async function signInGoogle(
                 providerAccountId: data.sub,
               },
             });
+            diagnostics.oauthAccountExists = true;
+            diagnostics.complete();
             // Prevent pre-registration account takeover: an unverified public
             // signup may have been created by someone who does not own the email.
             // Google's verified owner gains control; that password and all old
@@ -141,6 +224,10 @@ export async function signInGoogle(
             // provisioned accounts retain their existing credentials.
             const replaceUnverifiedPassword =
               user.registrationMethod === "credentials" && !user.emailVerified;
+            diagnostics.start(
+              "EXISTING_ACCOUNT_LINK",
+              "verified_email_link_update",
+            );
             user = await tx.user.update({
               where: { id: user.id },
               data: {
@@ -152,7 +239,10 @@ export async function signInGoogle(
               },
               include: { roles: { include: { role: true } } },
             });
-            if (!isNew)
+            diagnostics.observeUser(user);
+            diagnostics.complete();
+            if (!isNew) {
+              diagnostics.start("AUDIT_WRITE", "GOOGLE_ACCOUNT_LINKED");
               await tx.auditLog.create({
                 data: {
                   userId: user.id,
@@ -161,8 +251,13 @@ export async function signInGoogle(
                   action: "GOOGLE_ACCOUNT_LINKED",
                 },
               });
+            }
           }
-          if (!user.active) return { status: "pending" as const };
+          if (!user.active) {
+            diagnostics.denied("APPROVAL_PENDING");
+            return { status: "pending" as const };
+          }
+          diagnostics.start("SESSION_CREATE", "last_login_update");
           await tx.user.update({
             where: { id: user.id },
             data: {
@@ -170,9 +265,12 @@ export async function signInGoogle(
               image: googleImage(data.picture) || user.image,
             },
           });
+          diagnostics.complete();
+          diagnostics.start("SESSION_CREATE", "clear_login_attempts");
           await tx.loginAttempt.deleteMany({
             where: { key: loginAttemptKey(user.email) },
           });
+          diagnostics.start("AUDIT_WRITE", "LOGIN_SUCCESS");
           await tx.auditLog.create({
             data: {
               userId: user.id,
@@ -182,6 +280,7 @@ export async function signInGoogle(
               newValue: { provider: "google" },
             },
           });
+          diagnostics.complete();
           return {
             status: "allowed" as const,
             user: {
@@ -202,8 +301,11 @@ export async function signInGoogle(
         error instanceof Prisma.PrismaClientKnownRequestError &&
         ["P2002", "P2034"].includes(error.code) &&
         retry < 4
-      )
+      ) {
+        diagnostics.failed(error, true);
         continue;
+      }
+      diagnostics.failed(error);
       throw error;
     }
   }

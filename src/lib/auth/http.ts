@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { ZodError } from "zod";
 import { RegistrationError } from "./registration";
+import { RegistrationDiagnostics } from "./registrationDiagnostics";
 
 export function requireSameOrigin(req: Request) {
   const origin = req.headers.get("origin");
@@ -14,12 +15,22 @@ export function requireSameOrigin(req: Request) {
       403,
     );
 }
-export function registrationResponse(error: unknown) {
-  if (error instanceof RegistrationError)
+export function registrationResponse(
+  error: unknown,
+  diagnostics?: RegistrationDiagnostics,
+) {
+  if (error instanceof RegistrationError) {
+    if (diagnostics && error.status >= 500) diagnostics.failed(error);
     return NextResponse.json(
-      { error: error.message },
+      {
+        error:
+          diagnostics && error.status >= 500
+            ? "Unable to create account."
+            : error.message,
+      },
       { status: error.status },
     );
+  }
   if (error instanceof ZodError)
     return NextResponse.json(
       {
@@ -33,9 +44,13 @@ export function registrationResponse(error: unknown) {
       { error: "Please submit a valid form." },
       { status: 400 },
     );
-  console.error("auth.registration", { reason: "DATABASE_ERROR" });
+  (diagnostics ?? new RegistrationDiagnostics()).failed(error);
   return NextResponse.json(
-    { error: "Unable to complete the request. Please try again later." },
+    {
+      error: diagnostics
+        ? "Unable to create account."
+        : "Unable to complete the request. Please try again later.",
+    },
     { status: 503 },
   );
 }

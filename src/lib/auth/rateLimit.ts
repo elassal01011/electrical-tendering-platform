@@ -1,5 +1,6 @@
 import type { Prisma } from "@prisma/client";
 import { loginAttemptKey } from "./credentialPolicy";
+import { RegistrationDiagnostics } from "./registrationDiagnostics";
 
 export async function reserveAttempt(
   db: Prisma.TransactionClient,
@@ -23,19 +24,21 @@ export async function allowSignup(
   db: Prisma.TransactionClient,
   email: string,
   ip: string,
+  diagnostics = new RegistrationDiagnostics(),
 ) {
+  diagnostics.protect(email, ip);
+  diagnostics.start("RATE_LIMIT_CHECK", "signup_limits");
   // Separate namespace: resetting a login never resets registration limits.
-  const byIp = await reserveAttempt(
-    db,
-    loginAttemptKey(`signup:ip:${ip}`),
-    10,
-    60,
+  const byIp = await diagnostics.run(
+    "LOGIN_ATTEMPT_WRITE",
+    "signup_ip_limit",
+    () => reserveAttempt(db, loginAttemptKey(`signup:ip:${ip}`), 10, 60),
   );
-  const byEmail = await reserveAttempt(
-    db,
-    loginAttemptKey(`signup:email:${email}`),
-    5,
-    60,
+  const byEmail = await diagnostics.run(
+    "LOGIN_ATTEMPT_WRITE",
+    "signup_email_limit",
+    () => reserveAttempt(db, loginAttemptKey(`signup:email:${email}`), 5, 60),
   );
+  diagnostics.event("RATE_LIMIT_CHECK", "completed", "signup_limits");
   return byIp && byEmail;
 }
