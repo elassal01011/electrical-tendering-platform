@@ -33,12 +33,39 @@ export default function ExcelPage() {
     [step, setStep] = useState(0);
   const [importType, setImportType] = useState<string>(IMPORT_TYPES[0]),
     [mapping, setMapping] = useState<Record<string, number>>({});
+  const [projects, setProjects] = useState<any[]>([]),
+    [projectId, setProjectId] = useState(""),
+    [boqs, setBoqs] = useState<any[]>([]);
+  const [boqDestination, setBoqDestination] = useState<"create" | "append">(
+      "create",
+    ),
+    [targetBoqId, setTargetBoqId] = useState(""),
+    [boqName, setBoqName] = useState(""),
+    [boqReview, setBoqReview] = useState<any>(null),
+    [skipReview, setSkipReview] = useState(false);
   const uploadId = useRef("");
   useEffect(() => {
     requestJson("/api/boq/excel/upload")
       .then((d) => setLimit(d.maxUploadMB))
       .catch((e) => setError(e.message));
   }, []);
+  useEffect(() => {
+    requestJson("/api/projects")
+      .then((d) => {
+        setProjects(d.projects);
+        setProjectId(d.projects[0]?.id || "");
+      })
+      .catch((e) => setError(e.message));
+  }, []);
+  useEffect(() => {
+    if (!projectId) {
+      setBoqs([]);
+      return;
+    }
+    requestJson("/api/projects/" + projectId)
+      .then((d) => setBoqs(d.project.boqs))
+      .catch((e) => setError(e.message));
+  }, [projectId]);
   async function execute(work: () => Promise<void>) {
     setBusy(true);
     setError("");
@@ -143,6 +170,59 @@ export default function ExcelPage() {
         a.click();
         setTimeout(() => URL.revokeObjectURL(url), 1000);
       }
+    });
+  }
+  function boqMapping() {
+    return Object.fromEntries(
+      [
+        ["description", mapping.description],
+        ["quantity", mapping.quantity],
+        ["unit", mapping.unit],
+        ["manufacturer", mapping.manufacturer],
+        ["model", mapping.partNumber],
+      ].filter(
+        (entry): entry is [string, number] => typeof entry[1] === "number",
+      ),
+    );
+  }
+  async function reviewBoq() {
+    await execute(async () => {
+      const data = await requestJson("/api/boq/excel/preview", {
+        method: "POST",
+        body: JSON.stringify({
+          uploadId: uploadId.current,
+          config: {
+            sheetName: preview!.sheetName,
+            headerRow: preview!.headerRow,
+            mapping: boqMapping(),
+          },
+        }),
+      });
+      setBoqReview(data);
+      setMessage(
+        "BOQ mapping validated. Review the row counts before importing.",
+      );
+    });
+  }
+  async function importBoq() {
+    await execute(async () => {
+      const data = await requestJson("/api/boq/excel/import", {
+        method: "POST",
+        body: JSON.stringify({
+          uploadId: uploadId.current,
+          config: {
+            projectId: boqDestination === "create" ? projectId : undefined,
+            targetBoqId: boqDestination === "append" ? targetBoqId : undefined,
+            name: boqName.trim() || preview!.fileName.replace(/\.xlsx$/i, ""),
+            sheetName: preview!.sheetName,
+            headerRow: preview!.headerRow,
+            mapping: boqMapping(),
+            skipReviewRows: skipReview,
+          },
+        }),
+      });
+      setMessage(`${data.itemCount} BOQ rows imported successfully.`);
+      setBoqReview(null);
     });
   }
   return (
@@ -349,6 +429,132 @@ export default function ExcelPage() {
                         </label>
                       ))}
                     </div>
+                    {importType === "BOQ" && (
+                      <div
+                        className="space-y-3 border-t pt-4"
+                        style={{ borderColor: "var(--border)" }}
+                      >
+                        <h3 className="font-medium">BOQ destination</h3>
+                        <div className="grid gap-3 md:grid-cols-2">
+                          <label>
+                            Project
+                            <select
+                              className="input"
+                              value={projectId}
+                              onChange={(e) => {
+                                setProjectId(e.target.value);
+                                setTargetBoqId("");
+                                setBoqReview(null);
+                              }}
+                            >
+                              <option value="">Select project</option>
+                              {projects.map((p) => (
+                                <option key={p.id} value={p.id}>
+                                  {p.code} · {p.name}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                          <label>
+                            Import mode
+                            <select
+                              className="input"
+                              value={boqDestination}
+                              onChange={(e) => {
+                                setBoqDestination(
+                                  e.target.value as "create" | "append",
+                                );
+                                setBoqReview(null);
+                              }}
+                            >
+                              <option value="create">Create New BOQ</option>
+                              <option value="append">
+                                Add to Existing BOQ
+                              </option>
+                            </select>
+                          </label>
+                        </div>
+                        {boqDestination === "create" ? (
+                          <label className="block">
+                            BOQ Name
+                            <input
+                              className="input"
+                              maxLength={200}
+                              value={boqName}
+                              placeholder={preview.fileName.replace(
+                                /\.xlsx$/i,
+                                "",
+                              )}
+                              onChange={(e) => setBoqName(e.target.value)}
+                            />
+                          </label>
+                        ) : (
+                          <label className="block">
+                            Existing BOQ
+                            <select
+                              className="input"
+                              value={targetBoqId}
+                              onChange={(e) => {
+                                setTargetBoqId(e.target.value);
+                                setBoqReview(null);
+                              }}
+                            >
+                              <option value="">Select existing BOQ</option>
+                              {boqs.map((b) => (
+                                <option key={b.id} value={b.id}>
+                                  {b.name} — Rev {b.version}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                        )}
+                        <button
+                          className="btn-secondary"
+                          disabled={
+                            busy ||
+                            !mapping.description ||
+                            !mapping.quantity ||
+                            (boqDestination === "create"
+                              ? !projectId
+                              : !targetBoqId)
+                          }
+                          onClick={reviewBoq}
+                        >
+                          Review BOQ rows
+                        </button>
+                        {boqReview && (
+                          <div className="notice space-y-2">
+                            <p>
+                              {boqReview.summary.validRows} valid rows ·{" "}
+                              {boqReview.summary.reviewRows} rows require review
+                            </p>
+                            {boqReview.summary.reviewRows > 0 && (
+                              <label className="flex gap-2">
+                                <input
+                                  type="checkbox"
+                                  checked={skipReview}
+                                  onChange={(e) =>
+                                    setSkipReview(e.target.checked)
+                                  }
+                                />{" "}
+                                Skip all review rows
+                              </label>
+                            )}
+                            <button
+                              className="btn-primary"
+                              disabled={
+                                busy ||
+                                (boqReview.summary.reviewRows > 0 &&
+                                  !skipReview)
+                              }
+                              onClick={importBoq}
+                            >
+                              Confirm BOQ import
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    )}
                     {importType !== IMPORT_TYPES[0] && (
                       <button
                         className="btn-primary"

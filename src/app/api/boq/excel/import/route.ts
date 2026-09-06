@@ -12,7 +12,8 @@ import type { Prisma } from "@prisma/client";
 export const runtime = "nodejs";
 export const maxDuration = 60;
 const schema = z.object({
-  projectId: z.string().min(1),
+  projectId: z.string().min(1).optional(),
+  targetBoqId: z.string().min(1).optional(),
   name: z.string().min(1).max(200),
   sheetName: z.string().min(1),
   headerRow: z.number().int().positive(),
@@ -28,6 +29,11 @@ export async function POST(req: NextRequest) {
       guard.userId!,
     );
     const input = schema.parse(config);
+    if (
+      (!input.projectId && !input.targetBoqId) ||
+      (input.projectId && input.targetBoqId)
+    )
+      throw new ExcelError("Choose a project or an existing BOQ.");
     const workbook = await readWorkbook(file),
       sheet = workbook.getWorksheet(input.sheetName);
     if (!sheet) throw new ExcelError("Selected sheet no longer exists.");
@@ -60,33 +66,61 @@ export async function POST(req: NextRequest) {
           if (upload.importedBoqId)
             return { id: upload.importedBoqId, repeated: true };
         }
-        const project = await tx.project.findFirst({
-          where: { id: input.projectId, deletedAt: null },
-        });
-        if (!project)
-          throw new ExcelError("Selected project was not found.", 404);
-        const boq = await tx.bOQ.create({
-          data: {
-            projectId: input.projectId,
-            name: input.name,
-            sourceType: "EXCEL_IMPORT",
-            excelImports: {
-              create: {
-                fileName: file.name,
-                sheetName: input.sheetName,
-                headerRow: input.headerRow,
-                mapping: input.mapping,
-                importedRows: analysis.items.length,
-                createdBy: guard.userId!,
+        const target = input.targetBoqId
+          ? await tx.bOQ.findUnique({ where: { id: input.targetBoqId } })
+          : null;
+        const project = input.projectId
+          ? await tx.project.findFirst({
+              where: { id: input.projectId, deletedAt: null },
+            })
+          : null;
+        if ((input.targetBoqId && !target) || (!target && !project))
+          throw new ExcelError("Selected project or BOQ was not found.", 404);
+        const boq =
+          target ??
+          (await tx.bOQ.create({
+            data: {
+              projectId: project!.id,
+              name: input.name,
+              currency: project!.currency,
+              sourceType: "EXCEL_IMPORT",
+              excelImports: {
+                create: {
+                  fileName: file.name,
+                  sheetName: input.sheetName,
+                  headerRow: input.headerRow,
+                  mapping: input.mapping,
+                  importedRows: analysis.items.length,
+                  createdBy: guard.userId!,
+                },
               },
             },
-          },
-        });
+          }));
+        if (target)
+          await tx.excelImport.create({
+            data: {
+              boqId: target.id,
+              fileName: file.name,
+              sheetName: input.sheetName,
+              headerRow: input.headerRow,
+              mapping: input.mapping,
+              importedRows: analysis.items.length,
+              createdBy: guard.userId!,
+            },
+          });
+        const startingLine = target
+          ? ((
+              await tx.bOQItem.aggregate({
+                where: { boqId: boq.id },
+                _max: { lineNo: true },
+              })
+            )._max.lineNo ?? 0)
+          : 0;
         for (let offset = 0; offset < analysis.items.length; offset += 500) {
           await tx.bOQItem.createMany({
             data: analysis.items.slice(offset, offset + 500).map((row, i) => ({
               boqId: boq.id,
-              lineNo: offset + i + 1,
+              lineNo: startingLine + offset + i + 1,
               originalRowNumber: row.rowNumber,
               rawDescription: row.description,
               quantity: row.quantity,
@@ -119,6 +153,7 @@ export async function POST(req: NextRequest) {
               fileName: file.name,
               sheetName: input.sheetName,
               summary: analysis.summary,
+              mode: target ? "APPEND" : "CREATE",
               skippedRows: analysis.issues,
             } as Prisma.InputJsonValue,
           },

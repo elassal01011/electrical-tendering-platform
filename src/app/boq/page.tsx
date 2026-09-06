@@ -3,8 +3,14 @@ import { useEffect, useState } from "react";
 import { useSession } from "next-auth/react";
 import { hasPermission } from "@/lib/auth/permissions";
 import { requestJson } from "@/lib/client/request";
+import { applyCreatedBoq } from "@/lib/client/boqWorkflow";
 import { ExcelImportPanel } from "@/components/boq/ExcelImportPanel";
 import { EngineeringReview } from "@/components/boq/EngineeringReview";
+import {
+  BoqItemModal,
+  CreateBoqModal,
+  type ItemForm,
+} from "@/components/boq/BoqForms";
 import {
   PageHeader,
   DataTable,
@@ -27,13 +33,14 @@ export default function BOQ() {
     [notice, setNotice] = useState(""),
     [busy, setBusy] = useState(false),
     [review, setReview] = useState(""),
-    [manual, setManual] = useState(false),
-    [text, setText] = useState("");
+    [creating, setCreating] = useState(false),
+    [itemForm, setItemForm] = useState<any>(null);
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     requestJson("/api/projects")
       .then((d) => {
         setProjects(d.projects);
+        if (params.get("create") === "1") setCreating(true);
         if (params.get("boqId")) {
           setBoqId(params.get("boqId")!);
           requestJson("/api/boq/" + params.get("boqId"))
@@ -90,34 +97,66 @@ export default function BOQ() {
       setBusy(false);
     }
   }
-  async function addManual() {
+  async function createBoq(input: any) {
     setBusy(true);
     setError("");
     try {
-      const rows = text
-        .split("\n")
-        .filter((l) => l.trim())
-        .map((l) => {
-          const [description, quantity, unit] = l
-            .split("|")
-            .map((s) => s.trim());
-          return {
-            description,
-            quantity: Number(quantity),
-            unit: unit || "NO",
-          };
-        });
-      const d = await requestJson("/api/boq/import", {
+      const d = await requestJson("/api/boq", {
         method: "POST",
-        body: JSON.stringify({
-          projectId,
-          name: "BOQ " + new Date().toISOString(),
-          rows,
-        }),
+        body: JSON.stringify(input),
       });
-      setBoqId(d.boq.id);
-      setManual(false);
-      setText("");
+      setProjectId(d.boq.projectId);
+      const next = applyCreatedBoq(
+        projectId === d.boq.projectId ? boqs : [],
+        d.boq,
+      );
+      setBoqs(next.boqs);
+      setBoqId(next.selectedBoqId);
+      setBoq(d.boq);
+      setCreating(false);
+      setPage(1);
+      setNotice("BOQ created successfully.");
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function saveItem(input: ItemForm) {
+    setBusy(true);
+    setError("");
+    try {
+      const editing = itemForm?.id;
+      await requestJson(
+        editing ? "/api/boq/items/" + editing : "/api/boq/" + boqId + "/items",
+        { method: editing ? "PUT" : "POST", body: JSON.stringify(input) },
+      );
+      setItemForm(null);
+      setNotice(
+        editing
+          ? "BOQ item updated successfully."
+          : "BOQ item added successfully.",
+      );
+      await load();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function deleteItem(item: any) {
+    if (
+      !window.confirm(
+        `Delete BOQ item “${item.rawDescription}”? This action cannot be undone.`,
+      )
+    )
+      return;
+    setBusy(true);
+    setError("");
+    try {
+      await requestJson("/api/boq/items/" + item.id, { method: "DELETE" });
+      setNotice("BOQ item deleted successfully.");
+      await load();
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -159,25 +198,36 @@ export default function BOQ() {
             ))}
           </select>
         </label>
-        <label>
-          Bill of quantities
-          <select
-            className="input"
-            value={boqId}
-            onChange={(e) => {
-              setBoqId(e.target.value);
-              setPage(1);
-              setReview("");
-            }}
-          >
-            <option value="">Select BOQ</option>
-            {boqs.map((b) => (
-              <option key={b.id} value={b.id}>
-                {b.name}
-              </option>
-            ))}
-          </select>
-        </label>
+        <div>
+          <label className="block">
+            Bill of quantities
+            <select
+              className="input"
+              value={boqId}
+              onChange={(e) => {
+                setBoqId(e.target.value);
+                setPage(1);
+                setReview("");
+              }}
+            >
+              <option value="">Select BOQ</option>
+              {boqs.map((b) => (
+                <option key={b.id} value={b.id}>
+                  {b.name} — Rev {b.version}
+                </option>
+              ))}
+            </select>
+          </label>
+          {can("boq.edit") && (
+            <button
+              className="btn-primary mt-2"
+              disabled={busy}
+              onClick={() => setCreating(true)}
+            >
+              + Create BOQ
+            </button>
+          )}
+        </div>
       </div>
       {error && (
         <p className="error-box mb-4" role="alert">
@@ -193,6 +243,7 @@ export default function BOQ() {
         <div className="mb-5">
           <ExcelImportPanel
             projectId={projectId}
+            existingBoqs={boqs}
             onImported={(b: any) => {
               setBoqId(b.id);
               setBoq(b);
@@ -206,13 +257,13 @@ export default function BOQ() {
         </div>
       )}
       <div className="flex flex-wrap gap-2 mb-4">
-        {can("boq.import") && (
+        {can("boq.edit") && (
           <button
             className="btn-secondary"
-            disabled={!projectId}
-            onClick={() => setManual(!manual)}
+            disabled={!boqId || busy}
+            onClick={() => setItemForm({})}
           >
-            + Add manual BOQ
+            + Add Item
           </button>
         )}
         {can("boq.edit") && (
@@ -244,24 +295,34 @@ export default function BOQ() {
           }}
         />
       </div>
-      {manual && (
-        <section className="card mb-4 space-y-3">
-          <label>
-            One row per line: description | quantity | unit
-            <textarea
-              className="input h-32"
-              value={text}
-              onChange={(e) => setText(e.target.value)}
-            />
-          </label>
-          <button
-            disabled={busy || !text.trim()}
-            className="btn-primary"
-            onClick={addManual}
-          >
-            Create manual BOQ
-          </button>
-        </section>
+      {creating && can("boq.edit") && (
+        <CreateBoqModal
+          projects={projects}
+          initialProjectId={projectId}
+          busy={busy}
+          onCancel={() => setCreating(false)}
+          onSubmit={createBoq}
+        />
+      )}
+      {itemForm && (
+        <BoqItemModal
+          busy={busy}
+          initial={
+            itemForm.id
+              ? {
+                  itemNumber: itemForm.itemNumber || "",
+                  description: itemForm.rawDescription,
+                  quantity: Number(itemForm.quantity),
+                  unit: itemForm.unit,
+                  manufacturer: itemForm.manufacturerRequirement || "",
+                  model: itemForm.modelRequirement || "",
+                  remarks: itemForm.remarks || "",
+                }
+              : undefined
+          }
+          onCancel={() => setItemForm(null)}
+          onSubmit={saveItem}
+        />
       )}
       {review && (
         <div className="mb-5">
@@ -280,7 +341,14 @@ export default function BOQ() {
       {boq ? (
         <div className="card">
           <div className="flex justify-between mb-4">
-            <h2 className="font-semibold">{boq.name}</h2>
+            <div>
+              <h2 className="font-semibold">
+                {boq.name} — Rev {boq.version}
+              </h2>
+              <p className="muted text-sm">
+                {boq.description || "No description"} · {boq.currency}
+              </p>
+            </div>
             <span className="badge">{total} ROWS</span>
           </div>
           <DataTable
@@ -293,6 +361,7 @@ export default function BOQ() {
               "Confidence",
               "Applied cost",
               "Review",
+              "Actions",
             ]}
           >
             {boq.items.map((i: any) => (
@@ -315,6 +384,26 @@ export default function BOQ() {
                     </>
                   ) : (
                     "Unselected"
+                  )}
+                </td>
+                <td>
+                  {can("boq.edit") && (
+                    <div className="flex gap-2">
+                      <button
+                        className="btn-secondary"
+                        disabled={busy}
+                        onClick={() => setItemForm(i)}
+                      >
+                        Edit
+                      </button>
+                      <button
+                        className="btn-secondary"
+                        disabled={busy}
+                        onClick={() => deleteItem(i)}
+                      >
+                        Delete
+                      </button>
+                    </div>
                   )}
                 </td>
                 <td title={i.matchReason}>
@@ -365,10 +454,39 @@ export default function BOQ() {
         </div>
       ) : (
         <div className="card">
-          <EmptyState
-            title="Bring your tender scope into focus."
-            detail="Select a BOQ or upload an Excel workbook to start analysis."
-          />
+          {projectId && boqs.length === 0 ? (
+            <div className="space-y-3">
+              <h2 className="font-semibold">
+                No BOQs have been created for this project yet.
+              </h2>
+              <p className="muted">
+                Create one manually or import an Excel BOQ.
+              </p>
+              <div className="flex flex-wrap gap-2">
+                {can("boq.edit") && (
+                  <button
+                    className="btn-primary"
+                    onClick={() => setCreating(true)}
+                  >
+                    + Create Blank BOQ
+                  </button>
+                )}
+                {can("boq.import") && (
+                  <button
+                    className="btn-secondary"
+                    onClick={() => setUpload(true)}
+                  >
+                    Import Excel
+                  </button>
+                )}
+              </div>
+            </div>
+          ) : (
+            <EmptyState
+              title="No BOQ selected."
+              detail="Select a project and BOQ to view its items."
+            />
+          )}
         </div>
       )}
     </>

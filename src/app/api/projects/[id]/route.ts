@@ -22,6 +22,8 @@ export async function GET(
             id: true,
             name: true,
             version: true,
+            currency: true,
+            description: true,
             _count: { select: { items: true } },
           },
         },

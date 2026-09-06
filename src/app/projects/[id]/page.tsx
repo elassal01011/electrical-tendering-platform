@@ -70,6 +70,14 @@ export default function Project({
         <Link className="btn-secondary" href={"/boq?projectId=" + p.id}>
           Open BOQ
         </Link>
+        {hasPermission(session?.user.roles ?? [], "boq.edit") && (
+          <Link
+            className="btn-secondary"
+            href={"/boq?projectId=" + p.id + "&create=1"}
+          >
+            + New BOQ
+          </Link>
+        )}
         <Link className="btn-primary" href={"/quotations?projectId=" + p.id}>
           Quotations
         </Link>
@@ -153,7 +161,9 @@ export default function Project({
               </Link>
             ))
           ) : (
-            <p className="muted">Upload your first BOQ to begin analysis.</p>
+            <p className="muted">
+              No BOQs yet. Create a blank BOQ or import one from Excel.
+            </p>
           )}
         </section>
         <section className="card">

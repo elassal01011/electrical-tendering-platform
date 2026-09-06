@@ -11,7 +11,8 @@ const rowSchema = z.object({
 });
 
 const importSchema = z.object({
-  projectId: z.string().min(1),
+  projectId: z.string().min(1).optional(),
+  targetBoqId: z.string().min(1).optional(),
   name: z.string().default("Imported BOQ"),
   sourceType: z
     .enum(["MANUAL", "EXCEL_IMPORT", "CSV_IMPORT"])
@@ -38,41 +39,72 @@ export async function POST(req: NextRequest) {
       { status: 400 },
     );
   }
-  const { projectId, name, sourceType, rows } = parsed.data;
+  const { projectId, targetBoqId, name, sourceType, rows } = parsed.data;
 
-  const project = await prisma.project.findUnique({ where: { id: projectId } });
-  if (!project) {
+  if ((!projectId && !targetBoqId) || (projectId && targetBoqId))
+    return NextResponse.json(
+      { error: "Choose a project or an existing BOQ." },
+      { status: 400 },
+    );
+
+  const project = projectId
+    ? await prisma.project.findFirst({
+        where: { id: projectId, deletedAt: null },
+      })
+    : null;
+  const target = targetBoqId
+    ? await prisma.bOQ.findUnique({ where: { id: targetBoqId } })
+    : null;
+  if ((projectId && !project) || (targetBoqId && !target)) {
     return NextResponse.json({ error: "Project not found" }, { status: 404 });
   }
 
-  const boq = await prisma.bOQ.create({
-    data: {
-      projectId,
-      name,
-      sourceType,
-      items: {
-        create: rows.map((row, idx) => {
-          const spec = parseBoqDescription(row.description);
-          return {
-            lineNo: idx + 1,
-            rawDescription: row.description,
-            quantity: row.quantity,
-            unit: row.unit,
-            parsedSpec: spec as any,
-            status: "UNMATCHED",
-          };
-        }),
-      },
-    },
-    include: { items: true },
+  const startLine = target
+    ? ((
+        await prisma.bOQItem.aggregate({
+          where: { boqId: target.id },
+          _max: { lineNo: true },
+        })
+      )._max.lineNo ?? 0)
+    : 0;
+  const itemData = rows.map((row, idx) => {
+    const spec = parseBoqDescription(row.description);
+    return {
+      lineNo: startLine + idx + 1,
+      rawDescription: row.description,
+      quantity: row.quantity,
+      unit: row.unit,
+      parsedSpec: spec as any,
+      status: "UNMATCHED" as const,
+    };
   });
+  const boq = target
+    ? await prisma.bOQ.update({
+        where: { id: target.id },
+        data: { items: { create: itemData } },
+        include: { items: true },
+      })
+    : await prisma.bOQ.create({
+        data: {
+          projectId: project!.id,
+          name,
+          currency: project!.currency,
+          sourceType,
+          items: { create: itemData },
+        },
+        include: { items: true },
+      });
 
   await writeAuditLog({
     userId: guard.userId,
     action: "BOQ_IMPORTED",
     entity: "BOQ",
     entityId: boq.id,
-    newValue: { rowCount: rows.length, sourceType },
+    newValue: {
+      rowCount: rows.length,
+      sourceType,
+      mode: target ? "APPEND" : "CREATE",
+    },
   });
 
   return NextResponse.json({ boq }, { status: 201 });

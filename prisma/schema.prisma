@@ -85,10 +85,11 @@ model ExcelUpload {
   mimeType String
   size Int
   expiresAt DateTime
-  importedBoqId String? @unique
+  importedBoqId String?
   extractedData Json?
   chunks ExcelUploadChunk[]
   @@index([userId, expiresAt])
+  @@index([importedBoqId])
 }
 
 model ExcelUploadChunk {
@@ -296,7 +297,9 @@ model BOQ {
   projectId    String
   project      Project       @relation(fields: [projectId], references: [id])
   name         String
-  version      Int           @default(1)
+  description  String?
+  currency     String        @default("EGP")
+  version      Int           @default(0)
   sourceType   String        @default("MANUAL") // MANUAL | EXCEL_IMPORT | CSV_IMPORT
   createdAt    DateTime      @default(now())
   items        BOQItem[]

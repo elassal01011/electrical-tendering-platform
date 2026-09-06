@@ -29,9 +29,11 @@ type Preview = {
 };
 export function ExcelImportPanel({
   projectId,
+  existingBoqs,
   onImported,
 }: {
   projectId: string;
+  existingBoqs: { id: string; name: string; version: number }[];
   onImported: (boq: unknown) => void;
 }) {
   const [file, setFile] = useState<File | null>(null),
@@ -42,7 +44,10 @@ export function ExcelImportPanel({
   const [limit, setLimit] = useState<number | null>(null),
     [header, setHeader] = useState(1),
     [reviewed, setReviewed] = useState(false),
-    [skip, setSkip] = useState(false);
+    [skip, setSkip] = useState(false),
+    [destination, setDestination] = useState<"create" | "append">("create"),
+    [targetBoqId, setTargetBoqId] = useState(""),
+    [boqName, setBoqName] = useState("");
   const uploadId = useRef(""),
     inputRef = useRef<HTMLInputElement>(null);
   useEffect(() => {
@@ -159,8 +164,9 @@ export function ExcelImportPanel({
         body: JSON.stringify({
           uploadId: uploadId.current,
           config: {
-            projectId,
-            name: file.name.replace(/\.xlsx$/i, ""),
+            projectId: destination === "create" ? projectId : undefined,
+            targetBoqId: destination === "append" ? targetBoqId : undefined,
+            name: boqName.trim() || file.name.replace(/\.xlsx$/i, ""),
             sheetName: preview.sheetName,
             headerRow: preview.headerRow,
             mapping: currentMapping(),
@@ -218,10 +224,59 @@ export function ExcelImportPanel({
           </p>
         )}
       </div>
+      <div className="grid gap-3 md:grid-cols-2">
+        <label>
+          Import destination
+          <select
+            className="input"
+            value={destination}
+            disabled={!!busy}
+            onChange={(e) =>
+              setDestination(e.target.value as "create" | "append")
+            }
+          >
+            <option value="create">Create New BOQ</option>
+            <option value="append">Add to Existing BOQ</option>
+          </select>
+        </label>
+        {destination === "create" ? (
+          <label>
+            BOQ Name
+            <input
+              className="input"
+              maxLength={200}
+              value={boqName}
+              placeholder={file?.name.replace(/\.xlsx$/i, "") || "BOQ name"}
+              onChange={(e) => setBoqName(e.target.value)}
+            />
+          </label>
+        ) : (
+          <label>
+            Existing BOQ
+            <select
+              className="input"
+              required
+              value={targetBoqId}
+              onChange={(e) => setTargetBoqId(e.target.value)}
+            >
+              <option value="">Select existing BOQ</option>
+              {existingBoqs.map((b) => (
+                <option key={b.id} value={b.id}>
+                  {b.name} — Rev {b.version}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+      </div>
       <div className="flex flex-wrap items-center gap-3">
         <button
           className="btn-primary"
-          disabled={!file || !!busy || !projectId}
+          disabled={
+            !file ||
+            !!busy ||
+            (destination === "create" ? !projectId : !targetBoqId)
+          }
           onClick={() => loadPreview()}
         >
           Preview workbook
@@ -430,6 +485,7 @@ export function ExcelImportPanel({
                 disabled={
                   !!busy ||
                   !preview.summary.validRows ||
+                  (destination === "create" ? !projectId : !targetBoqId) ||
                   (!!preview.summary.reviewRows && !skip)
                 }
                 onClick={importFile}
