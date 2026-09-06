@@ -1,3 +1,4 @@
+import { Buffer } from "node:buffer";
 import ExcelJS from "exceljs";
 import { ExcelError, validateExcelFile } from "./uploadPolicy";
 
@@ -58,15 +59,22 @@ export function validateZip(buffer: Buffer) {
   }
   if (offset > end) throw new ExcelError("Workbook is corrupted or invalid.");
 }
-export async function readWorkbook(file: WorkbookFile) {
+export async function loadWorkbook(file: WorkbookFile) {
   validateExcelFile(file);
+  let stage = "input";
+  let input: unknown;
   try {
-    const bytes = Buffer.from(await file.arrayBuffer());
+    input = await file.arrayBuffer();
+    const bytes = Buffer.from(input as ArrayBuffer);
+    input = bytes;
+    stage = "zip";
     if (bytes.length !== file.size || bytes.length < 22)
       throw new ExcelError("Workbook is corrupted or invalid.");
     validateZip(bytes);
+    stage = "parse";
     const workbook = new ExcelJS.Workbook();
     await workbook.xlsx.load(bytes);
+    stage = "limits";
     if (!workbook.worksheets.length)
       throw new ExcelError("Workbook contains no worksheets.");
     for (const sheet of workbook.worksheets) {
@@ -79,12 +87,22 @@ export async function readWorkbook(file: WorkbookFile) {
     return workbook;
   } catch (error) {
     if (error instanceof ExcelError) throw error;
-    // Parser messages can contain workbook contents; log the error class only.
+    // Do not log parser-controlled content, filenames, XML, or binary data.
     console.error("excel.read", {
+      stage,
       name: error instanceof Error ? error.name : "UnknownError",
+      message:
+        stage === "parse"
+          ? "ExcelJS failed to parse XLSX"
+          : "Workbook input processing failed",
+      inputType: input?.constructor?.name ?? typeof input,
+      isBuffer: Buffer.isBuffer(input),
+      byteLength: input instanceof Uint8Array ? input.byteLength : undefined,
     });
     throw new ExcelError(
-      "Workbook is corrupted or invalid.",
+      stage === "parse"
+        ? "Workbook is corrupted or invalid."
+        : "Unable to process workbook input.",
       400,
       "Unable to read Excel workbook. Re-save it as an unencrypted .xlsx file and try again.",
     );
@@ -106,4 +124,10 @@ export function readCell(cell: ExcelJS.Cell): string | number | null {
     return value.richText.map((part) => part.text).join("");
   if ("text" in value) return value.text;
   return master.text;
+}
+
+// Generic public reader; business adapters explicitly use the lower-level loader.
+export async function readWorkbook(file: WorkbookFile) {
+  const { extractWorkbook } = await import("./extractWorkbook");
+  return extractWorkbook(file);
 }

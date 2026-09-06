@@ -344,7 +344,7 @@ export function ExcelImportPanel({
                 <tr>
                   <th>Excel row</th>
                   {preview.mapping.map((m) => (
-                    <th key={m.column}>{m.letter}</th>
+                    <th key={m.column}>{m.header || `Column_${m.letter}`}</th>
                   ))}
                 </tr>
               </thead>

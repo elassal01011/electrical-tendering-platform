@@ -2,6 +2,7 @@
 const nextConfig = {
   outputFileTracingRoot: __dirname,
   poweredByHeader: false,
+  serverExternalPackages: ["exceljs"],
   async headers() {
     return [
       {

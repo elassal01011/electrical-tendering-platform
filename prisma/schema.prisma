@@ -86,6 +86,7 @@ model ExcelUpload {
   size Int
   expiresAt DateTime
   importedBoqId String? @unique
+  extractedData Json?
   chunks ExcelUploadChunk[]
   @@index([userId, expiresAt])
 }

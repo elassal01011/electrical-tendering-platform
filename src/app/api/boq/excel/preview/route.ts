@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { requirePermission } from "@/lib/auth/apiGuard";
-import { readWorkbook } from "@/lib/services/excel/readWorkbook";
+import { loadWorkbook as readWorkbook } from "@/lib/services/excel/readWorkbook";
 import { analyzeWorkbook } from "@/lib/services/excel/analyzeWorkbook";
 import { workbookRequest } from "@/lib/services/excel/uploadStore";
 import { ExcelError } from "@/lib/services/excel/uploadPolicy";

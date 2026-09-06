@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import ExcelJS from "exceljs";
-import { readWorkbook } from "@/lib/services/excel/readWorkbook";
+import { loadWorkbook as readWorkbook } from "@/lib/services/excel/readWorkbook";
 import { apiError } from "@/lib/apiError";
 import { prisma } from "@/lib/db/prisma";
 import { requirePermission, writeAuditLog } from "@/lib/auth/apiGuard";

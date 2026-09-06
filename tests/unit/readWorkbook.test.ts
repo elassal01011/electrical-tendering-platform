@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import ExcelJS from "exceljs";
 import {
-  readWorkbook,
+  loadWorkbook as readWorkbook,
   readCell,
 } from "../../src/lib/services/excel/readWorkbook";
 import {

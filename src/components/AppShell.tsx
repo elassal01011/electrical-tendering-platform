@@ -21,6 +21,7 @@ const navigation = [
       ["/clients", "Clients", "project.view"],
       ["/consultants", "Consultants", "project.view"],
       ["/boq", "BOQ analysis", "boq.view"],
+      ["/excel", "Excel Data Extractor", "boq.import"],
       ["/components", "Component catalog", "catalog.view"],
       ["/panels", "Panel builder", "panel.view"],
     ],

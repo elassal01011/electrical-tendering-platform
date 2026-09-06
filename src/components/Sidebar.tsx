@@ -7,6 +7,7 @@ import clsx from "clsx";
 const NAV = [
   { href: "/dashboard", label: "Dashboard" },
   { href: "/boq", label: "BOQ Import & Matching" },
+  { href: "/excel", label: "Excel Data Extractor" },
   { href: "/pricing", label: "Supplier Pricing" },
   { href: "/panels", label: "Panels / BOM" },
 ];

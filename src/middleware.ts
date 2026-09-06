@@ -10,6 +10,7 @@ export default withAuth(
       clients: "project.view",
       consultants: "project.view",
       boq: "boq.view",
+      excel: "boq.import",
       pricing: "pricing.view",
       costing: "pricing.view",
       panels: "panel.view",
