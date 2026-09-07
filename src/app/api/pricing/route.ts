@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import ExcelJS from "exceljs";
 import { loadWorkbook as readWorkbook } from "@/lib/services/excel/readWorkbook";
+import { ExcelError } from "@/lib/services/excel/uploadPolicy";
 import { apiError } from "@/lib/apiError";
 import { prisma } from "@/lib/db/prisma";
 import { requirePermission, writeAuditLog } from "@/lib/auth/apiGuard";
@@ -13,7 +14,14 @@ import {
   valueAt,
 } from "@/lib/services/pricing/pricingImport";
 
+import {
+  writePricingImport,
+  type PricingProgress,
+} from "@/lib/services/pricing/writePricingImport";
+import { logPricingImportError } from "@/lib/services/pricing/pricingImportDiagnostics";
+
 export const runtime = "nodejs";
+export const maxDuration = 60;
 const currency = z
   .string()
   .trim()
@@ -210,6 +218,13 @@ export async function DELETE(req: NextRequest) {
 }
 
 export async function PATCH(req: NextRequest) {
+  const progress: PricingProgress = {
+    stage: "read-workbook",
+    imported: 0,
+    created: 0,
+    updated: 0,
+  };
+  let total = 0;
   const guard = await requirePermission("pricing.edit");
   if (guard.error) return guard.error;
   try {
@@ -256,7 +271,8 @@ export async function PATCH(req: NextRequest) {
         currencyValue = (text(get(row, "currency")) || "EGP").toUpperCase(),
         fromValue = get(row, "effectiveFrom"),
         parsedFrom = date(fromValue),
-        from = parsedFrom || new Date(),
+        // A stable undated baseline prevents every retry from becoming a new price version.
+        from = parsedFrom || new Date("1970-01-01T00:00:00.000Z"),
         toValue = get(row, "effectiveTo"),
         to = toValue == null || !text(toValue) ? null : date(toValue);
       if (!supplier || (!partNumber && !supplierPartNumber && !description))
@@ -265,7 +281,12 @@ export async function PATCH(req: NextRequest) {
           message:
             "Supplier and at least one of Part Number, Supplier SKU, or Description are required.",
         });
-      else if (!Number.isFinite(price) || price < 0)
+      else if (
+        !rawPrice ||
+        !Number.isFinite(price) ||
+        price < 0 ||
+        price >= 1e12
+      )
         errors.push({
           row: n,
           field: "price",
@@ -316,6 +337,7 @@ export async function PATCH(req: NextRequest) {
     }
     if (!raw.length && !errors.length)
       return fail("The XLSX file contains no pricing rows.", 422);
+    progress.stage = "preload-identities";
     const [suppliers, components] = await Promise.all([
       prisma.party.findMany({ where: { type: "SUPPLIER", deletedAt: null } }),
       prisma.component.findMany({ where: { active: true } }),
@@ -323,6 +345,26 @@ export async function PATCH(req: NextRequest) {
     const supplierIds = new Map(
       suppliers.map((s) => [normalizePricingIdentity(s.companyName), s.id]),
     );
+    const componentByIdentity = new Map(
+      components.map((c) => [
+        `${normalizePricingIdentity(c.manufacturer)}|${normalizePricingIdentity(c.partNumber)}`,
+        c,
+      ]),
+    );
+    const componentByPart = new Map<string, typeof components>();
+    const componentByDescription = new Map<string, typeof components>();
+    for (const component of components) {
+      const part = normalizePricingIdentity(component.partNumber);
+      const description = normalizePricingIdentity(component.description);
+      componentByPart.set(part, [
+        ...(componentByPart.get(part) ?? []),
+        component,
+      ]);
+      componentByDescription.set(description, [
+        ...(componentByDescription.get(description) ?? []),
+        component,
+      ]);
+    }
     const seen = new Set<string>(),
       staged: any[] = [];
     const summary = {
@@ -341,34 +383,18 @@ export async function PATCH(req: NextRequest) {
         manufacturerKey = normalizePricingIdentity(item.manufacturer),
         descriptionKey = normalizePricingIdentity(item.description);
       const componentKey = `${manufacturerKey}|${partKey}`;
+      const partMatches = componentByPart.get(partKey) ?? [];
+      const descriptionMatches = (
+        componentByDescription.get(descriptionKey) ?? []
+      ).filter(
+        (c) =>
+          !manufacturerKey ||
+          normalizePricingIdentity(c.manufacturer) === manufacturerKey,
+      );
       const component =
-        components.find(
-          (c) =>
-            manufacturerKey &&
-            partKey &&
-            normalizePricingIdentity(c.manufacturer) === manufacturerKey &&
-            normalizePricingIdentity(c.partNumber) === partKey,
-        ) ||
-        (partKey
-          ? (() => {
-              const matches = components.filter(
-                (c) => normalizePricingIdentity(c.partNumber) === partKey,
-              );
-              return matches.length === 1 ? matches[0] : undefined;
-            })()
-          : undefined) ||
-        (descriptionKey
-          ? (() => {
-              const matches = components.filter(
-                (c) =>
-                  normalizePricingIdentity(c.description) === descriptionKey &&
-                  (!manufacturerKey ||
-                    normalizePricingIdentity(c.manufacturer) ===
-                      manufacturerKey),
-              );
-              return matches.length === 1 ? matches[0] : undefined;
-            })()
-          : undefined);
+        componentByIdentity.get(componentKey) ??
+        (partMatches.length === 1 ? partMatches[0] : undefined) ??
+        (descriptionMatches.length === 1 ? descriptionMatches[0] : undefined);
       const duplicateKey = `${supplierKey}|${normalizePricingIdentity(item.supplierPartNumber || item.partNumber || item.description)}|${item.effectiveFrom.toISOString().slice(0, 10)}`;
       if (seen.has(duplicateKey))
         errors.push({
@@ -432,108 +458,10 @@ export async function PATCH(req: NextRequest) {
         rejected: 0,
         errors: [],
       });
-    let created = 0,
-      updated = 0;
-    await prisma.$transaction(async (tx) => {
-      if (mode === "replace")
-        await tx.supplierPrice.updateMany({
-          where: {
-            active: true,
-            supplierId: {
-              in: staged
-                .map((item) => item.supplierId)
-                .filter((id): id is string => !!id),
-            },
-          },
-          data: { active: false },
-        });
-      const createdSuppliers = new Map<string, string>(),
-        createdComponents = new Map<string, string>();
-      for (const item of staged) {
-        let supplierId =
-          item.supplierId || createdSuppliers.get(item.supplierKey);
-        if (!supplierId) {
-          const supplier = await tx.party.create({
-            data: {
-              type: "SUPPLIER",
-              companyName: item.supplier,
-              country: "Egypt",
-            },
-          });
-          supplierId = supplier.id;
-          createdSuppliers.set(item.supplierKey, supplierId);
-        }
-        let componentId =
-          item.componentId || createdComponents.get(item.componentKey);
-        if (!componentId) {
-          const component = await tx.component.create({
-            data: {
-              manufacturer: item.manufacturer || "Unspecified",
-              partNumber:
-                item.partNumber ||
-                item.supplierPartNumber ||
-                `IMPORTED-${createdComponents.size + 1}`,
-              description:
-                item.description || item.partNumber || item.supplierPartNumber,
-              category: "OTHER",
-              tags: ["IMPORTED"],
-            },
-          });
-          componentId = component.id;
-          createdComponents.set(item.componentKey, componentId);
-        }
-        const supplierPartNumber =
-          item.supplierPartNumber || item.partNumber || null;
-        const existing =
-          mode === "update"
-            ? await tx.supplierPrice.findFirst({
-                where: {
-                  supplierId,
-                  componentId,
-                  supplierPartNumber,
-                  effectiveFrom: item.effectiveFrom,
-                },
-              })
-            : null;
-        const data = {
-          supplierId,
-          componentId,
-          supplierPartNumber,
-          price: item.price,
-          currency: item.currency,
-          unit: item.unit,
-          source: item.source,
-          active: item.active,
-          effectiveFrom: item.effectiveFrom,
-          effectiveTo: item.effectiveTo,
-        };
-        if (existing) {
-          await tx.supplierPrice.update({ where: { id: existing.id }, data });
-          updated++;
-        } else {
-          if (mode !== "replace")
-            await tx.supplierPrice.updateMany({
-              where: {
-                supplierId,
-                componentId,
-                supplierPartNumber,
-                active: true,
-                effectiveFrom: { lt: item.effectiveFrom },
-                OR: [
-                  { effectiveTo: null },
-                  { effectiveTo: { gte: item.effectiveFrom } },
-                ],
-              },
-              data: {
-                active: false,
-                effectiveTo: new Date(item.effectiveFrom.getTime() - 86400000),
-              },
-            });
-          await tx.supplierPrice.create({ data });
-          created++;
-        }
-      }
-    });
+    total = staged.length;
+    await writePricingImport(prisma, staged, mode, progress);
+    const { created, updated } = progress;
+    progress.stage = "audit";
     resultSummary.newPrices = created;
     resultSummary.updatedPrices = updated;
     await writeAuditLog({
@@ -545,6 +473,9 @@ export async function PATCH(req: NextRequest) {
     });
     return NextResponse.json({
       success: true,
+      imported: progress.imported,
+      skipped: 0,
+      failed: 0,
       message: `Imported ${created} and updated ${updated} price record(s).`,
       summary: resultSummary,
       created,
@@ -553,6 +484,22 @@ export async function PATCH(req: NextRequest) {
       errors: [],
     });
   } catch (e) {
-    return apiError(e, "pricing.import");
+    if (e instanceof ExcelError) return apiError(e, "pricing.validation");
+    logPricingImportError(e, progress.stage);
+    return NextResponse.json(
+      {
+        success: false,
+        error:
+          "Pricing import failed. Earlier batches may have committed; retrying the same file is safe.",
+        stage: progress.stage,
+        imported: progress.imported,
+        created: progress.created,
+        updated: progress.updated,
+        skipped: 0,
+        failed: total - progress.imported,
+        partial: progress.imported > 0,
+      },
+      { status: 503 },
+    );
   }
 }
