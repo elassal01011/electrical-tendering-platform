@@ -9,6 +9,18 @@ import {
 } from "@/lib/services/excel/importMapping";
 import type { normalizeSheet } from "@/lib/services/excel/extractWorkbook";
 
+const DESCRIPTION_FIELDS = [
+  ["category", "Category", "text"],
+  ["ratedCurrent", "Current (A)", "number"],
+  ["poles", "Poles", "number"],
+  ["breakingCapacity", "Breaking (kA)", "number"],
+  ["manufacturer", "Manufacturer", "text"],
+  ["conductorMaterial", "Conductor", "text"],
+  ["insulation", "Insulation", "text"],
+  ["cableCores", "Cable cores", "number"],
+  ["cableSize", "Cable size (mm²)", "number"],
+] as const;
+
 type Preview = ReturnType<typeof normalizeSheet> & {
   fileName: string;
   sheets: {
@@ -22,6 +34,27 @@ type Preview = ReturnType<typeof normalizeSheet> & {
   detectedHeaderRow: number;
   headerConfidence: number;
   suggestions: Record<string, number>;
+  recognition: {
+    column: number;
+    sourceColumn: string;
+    suggestedField: string;
+    confidence: number;
+    reasons: string[];
+  }[];
+  descriptionSuggestions: {
+    rowNumber: number;
+    original: string;
+    category: string | null;
+    ratedCurrent: number | null;
+    poles: number | null;
+    breakingCapacity: number | null;
+    manufacturer: string | null;
+    conductorMaterial: string | null;
+    insulation: string | null;
+    cableCores: number | null;
+    cableSize: number | null;
+  }[];
+  suggestedImportTypes: { type: string; confidence: number }[];
 };
 export default function ExcelPage() {
   const [preview, setPreview] = useState<Preview | null>(null);
@@ -32,7 +65,8 @@ export default function ExcelPage() {
   const [header, setHeader] = useState(1),
     [step, setStep] = useState(0);
   const [importType, setImportType] = useState<string>(IMPORT_TYPES[0]),
-    [mapping, setMapping] = useState<Record<string, number>>({});
+    [mapping, setMapping] = useState<Record<string, number>>({}),
+    [descriptionSuggestions, setDescriptionSuggestions] = useState<any[]>([]);
   const [projects, setProjects] = useState<any[]>([]),
     [projectId, setProjectId] = useState(""),
     [boqs, setBoqs] = useState<any[]>([]);
@@ -41,8 +75,11 @@ export default function ExcelPage() {
     ),
     [targetBoqId, setTargetBoqId] = useState(""),
     [boqName, setBoqName] = useState(""),
+    [boqRevision, setBoqRevision] = useState(0),
+    [boqCurrency, setBoqCurrency] = useState("EGP"),
     [boqReview, setBoqReview] = useState<any>(null),
-    [skipReview, setSkipReview] = useState(false);
+    [skipReview, setSkipReview] = useState(false),
+    [defaultQuantityOne, setDefaultQuantityOne] = useState(false);
   const uploadId = useRef("");
   useEffect(() => {
     requestJson("/api/boq/excel/upload")
@@ -89,6 +126,7 @@ export default function ExcelPage() {
     setPreview(result);
     setHeader(result.headerRow);
     setMapping({});
+    setDescriptionSuggestions(result.descriptionSuggestions ?? []);
     setStep(0);
   }
   async function upload(file?: File) {
@@ -185,6 +223,16 @@ export default function ExcelPage() {
       ),
     );
   }
+  function descriptionOverrides() {
+    return Object.fromEntries(
+      descriptionSuggestions.map(
+        ({ rowNumber, original: _original, ...values }) => [
+          String(rowNumber),
+          values,
+        ],
+      ),
+    );
+  }
   async function reviewBoq() {
     await execute(async () => {
       const data = await requestJson("/api/boq/excel/preview", {
@@ -195,6 +243,8 @@ export default function ExcelPage() {
             sheetName: preview!.sheetName,
             headerRow: preview!.headerRow,
             mapping: boqMapping(),
+            defaultQuantityOne,
+            descriptionOverrides: descriptionOverrides(),
           },
         }),
       });
@@ -214,10 +264,14 @@ export default function ExcelPage() {
             projectId: boqDestination === "create" ? projectId : undefined,
             targetBoqId: boqDestination === "append" ? targetBoqId : undefined,
             name: boqName.trim() || preview!.fileName.replace(/\.xlsx$/i, ""),
+            revision: boqRevision,
+            currency: boqCurrency,
             sheetName: preview!.sheetName,
             headerRow: preview!.headerRow,
             mapping: boqMapping(),
             skipReviewRows: skipReview,
+            defaultQuantityOne,
+            descriptionOverrides: descriptionOverrides(),
           },
         }),
       });
@@ -393,42 +447,164 @@ export default function ExcelPage() {
                       </Link>
                       .
                     </p>
-                    <h3>Optional column mapping</h3>
+                    <p className="notice">
+                      Likely workbook type:{" "}
+                      {preview.suggestedImportTypes
+                        .map(
+                          (item) =>
+                            `${item.type} ${Math.round(item.confidence * 100)}%`,
+                        )
+                        .join(" · ")}
+                    </p>
+                    <h3>Column recognition</h3>
                     <button
                       className="btn-secondary"
                       disabled={busy}
                       onClick={() => setMapping(preview.suggestions)}
                     >
-                      Use suggested mappings
+                      Auto Map Columns
                     </button>
-                    <div className="grid gap-3 md:grid-cols-3">
-                      {MAPPING_FIELDS.map((field) => (
-                        <label key={field}>
-                          {field}
-                          <select
-                            className="input"
-                            disabled={busy}
-                            value={mapping[field] ?? ""}
-                            onChange={(e) =>
-                              setMapping((current) => {
-                                const next = { ...current };
-                                if (e.target.value)
-                                  next[field] = Number(e.target.value);
-                                else delete next[field];
-                                return next;
-                              })
-                            }
-                          >
-                            <option value="">Unmapped</option>
-                            {preview.headers.map((h) => (
-                              <option key={h.key} value={h.column}>
-                                {h.label} ({h.key})
-                              </option>
-                            ))}
-                          </select>
-                        </label>
-                      ))}
+                    <div className="table-wrap">
+                      <table className="data-table">
+                        <thead>
+                          <tr>
+                            <th>Excel Column</th>
+                            <th>Detected As</th>
+                            <th>Confidence</th>
+                            <th>Your Mapping</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {preview.recognition.map((column) => {
+                            const selected =
+                              Object.entries(mapping).find(
+                                ([, value]) => value === column.column,
+                              )?.[0] || "";
+                            const level =
+                              column.confidence >= 0.85
+                                ? "High"
+                                : column.confidence >= 0.6
+                                  ? "Medium"
+                                  : "Low";
+                            return (
+                              <tr key={column.column}>
+                                <td>{column.sourceColumn}</td>
+                                <td>
+                                  {column.suggestedField === "unknown"
+                                    ? "Unknown"
+                                    : column.suggestedField}
+                                  <div className="muted text-xs">
+                                    {column.reasons.join("; ")}
+                                  </div>
+                                </td>
+                                <td>
+                                  {column.confidence
+                                    ? `${Math.round(column.confidence * 100)}% · ${level}`
+                                    : "—"}
+                                </td>
+                                <td>
+                                  <select
+                                    className="input"
+                                    disabled={busy}
+                                    value={selected}
+                                    onChange={(e) =>
+                                      setMapping((current) => {
+                                        const next = Object.fromEntries(
+                                          Object.entries(current).filter(
+                                            ([, value]) =>
+                                              value !== column.column,
+                                          ),
+                                        );
+                                        if (e.target.value)
+                                          next[e.target.value] = column.column;
+                                        return next;
+                                      })
+                                    }
+                                  >
+                                    <option value="">Unknown / Ignore</option>
+                                    {MAPPING_FIELDS.map((field) => (
+                                      <option key={field} value={field}>
+                                        {field}
+                                      </option>
+                                    ))}
+                                  </select>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
                     </div>
+                    {descriptionSuggestions.length > 0 && (
+                      <div className="space-y-2">
+                        <h3>Editable description suggestions</h3>
+                        <p className="muted">
+                          The original description stays unchanged. Correct any
+                          inferred electrical value before importing the BOQ.
+                        </p>
+                        <div className="table-wrap">
+                          <table className="data-table">
+                            <thead>
+                              <tr>
+                                <th>Row</th>
+                                <th>Description</th>
+                                {DESCRIPTION_FIELDS.map(([, label]) => (
+                                  <th key={label}>{label}</th>
+                                ))}
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {descriptionSuggestions.map(
+                                (suggestion, index) => (
+                                  <tr key={suggestion.rowNumber}>
+                                    <td>{suggestion.rowNumber}</td>
+                                    <td>{suggestion.original}</td>
+                                    {DESCRIPTION_FIELDS.map(
+                                      ([field, , type]) => (
+                                        <td key={field}>
+                                          <input
+                                            className="input min-w-28"
+                                            type={type}
+                                            value={suggestion[field] ?? ""}
+                                            onChange={(event) =>
+                                              setDescriptionSuggestions(
+                                                (current) =>
+                                                  current.map(
+                                                    (entry, entryIndex) =>
+                                                      entryIndex === index
+                                                        ? {
+                                                            ...entry,
+                                                            [field]:
+                                                              type === "number"
+                                                                ? event.target
+                                                                    .value ===
+                                                                  ""
+                                                                  ? null
+                                                                  : Number(
+                                                                      event
+                                                                        .target
+                                                                        .value,
+                                                                    )
+                                                                : event.target
+                                                                    .value ||
+                                                                  null,
+                                                          }
+                                                        : entry,
+                                                  ),
+                                              )
+                                            }
+                                          />
+                                        </td>
+                                      ),
+                                    )}
+                                  </tr>
+                                ),
+                              )}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    )}
                     {importType === "BOQ" && (
                       <div
                         className="space-y-3 border-t pt-4"
@@ -475,19 +651,45 @@ export default function ExcelPage() {
                           </label>
                         </div>
                         {boqDestination === "create" ? (
-                          <label className="block">
-                            BOQ Name
-                            <input
-                              className="input"
-                              maxLength={200}
-                              value={boqName}
-                              placeholder={preview.fileName.replace(
-                                /\.xlsx$/i,
-                                "",
-                              )}
-                              onChange={(e) => setBoqName(e.target.value)}
-                            />
-                          </label>
+                          <div className="grid gap-3 md:grid-cols-3">
+                            <label className="block">
+                              BOQ Name
+                              <input
+                                className="input"
+                                maxLength={200}
+                                value={boqName}
+                                placeholder={preview.fileName.replace(
+                                  /\.xlsx$/i,
+                                  "",
+                                )}
+                                onChange={(e) => setBoqName(e.target.value)}
+                              />
+                            </label>
+                            <label>
+                              Revision
+                              <input
+                                className="input"
+                                type="number"
+                                min="0"
+                                max="9999"
+                                value={boqRevision}
+                                onChange={(e) =>
+                                  setBoqRevision(Number(e.target.value))
+                                }
+                              />
+                            </label>
+                            <label>
+                              Currency
+                              <input
+                                className="input uppercase"
+                                maxLength={3}
+                                value={boqCurrency}
+                                onChange={(e) =>
+                                  setBoqCurrency(e.target.value.toUpperCase())
+                                }
+                              />
+                            </label>
+                          </div>
                         ) : (
                           <label className="block">
                             Existing BOQ
@@ -513,7 +715,7 @@ export default function ExcelPage() {
                           disabled={
                             busy ||
                             !mapping.description ||
-                            !mapping.quantity ||
+                            (!mapping.quantity && !defaultQuantityOne) ||
                             (boqDestination === "create"
                               ? !projectId
                               : !targetBoqId)
@@ -522,6 +724,20 @@ export default function ExcelPage() {
                         >
                           Review BOQ rows
                         </button>
+                        {!mapping.quantity && (
+                          <label className="flex gap-2">
+                            <input
+                              type="checkbox"
+                              checked={defaultQuantityOne}
+                              onChange={(e) => {
+                                setDefaultQuantityOne(e.target.checked);
+                                setBoqReview(null);
+                              }}
+                            />{" "}
+                            I accept quantity 1 for every imported row without a
+                            quantity column.
+                          </label>
+                        )}
                         {boqReview && (
                           <div className="notice space-y-2">
                             <p>

@@ -16,9 +16,17 @@ export function parseQuantity(value: unknown): number | null {
   const number = Number(match[1].replace(/,/g, ""));
   return Number.isFinite(number) && number > 0 && number < 1e9 ? number : null;
 }
-export function validateMapping(mapping: ImportMapping, columnCount: number) {
-  if (!mapping.description || !mapping.quantity)
-    throw new ExcelError("Description and quantity mappings are required.");
+export function validateMapping(
+  mapping: ImportMapping,
+  columnCount: number,
+  allowMissingQuantity = false,
+) {
+  if (!mapping.description || (!mapping.quantity && !allowMissingQuantity))
+    throw new ExcelError(
+      allowMissingQuantity
+        ? "Description mapping is required."
+        : "Description and quantity mappings are required.",
+    );
   const columns = Object.values(mapping);
   if (
     new Set(columns).size !== columns.length ||
@@ -35,6 +43,7 @@ export function analyzeWorkbook(
   sheet: ExcelJS.Worksheet,
   requestedHeader?: number,
   override?: ImportMapping,
+  defaultQuantityOne = false,
 ) {
   const rows = Array.from({ length: Math.min(30, sheet.rowCount) }, (_, i) =>
     Array.from({ length: sheet.columnCount }, (_, c) =>
@@ -60,7 +69,7 @@ export function analyzeWorkbook(
         .filter((d) => d.field !== "ignore")
         .map((d) => [d.field, d.column]),
     );
-  if (override) validateMapping(mapping, sheet.columnCount);
+  if (override) validateMapping(mapping, sheet.columnCount, defaultQuantityOne);
   const summary = {
     totalRows: 0,
     validRows: 0,
@@ -105,8 +114,9 @@ export function analyzeWorkbook(
     );
     const description = fields.description ?? "",
       quantityText = fields.quantity ?? "";
-    const quantity = parseQuantity(quantityText);
-    if (!quantityText) summary.missingQuantity++;
+    const quantity =
+      !mapping.quantity && defaultQuantityOne ? 1 : parseQuantity(quantityText);
+    if (mapping.quantity && !quantityText) summary.missingQuantity++;
     const section =
       description &&
       !quantityText &&

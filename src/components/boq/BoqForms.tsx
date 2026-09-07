@@ -296,3 +296,219 @@ export function BoqItemModal({
     </div>
   );
 }
+
+export type PriceForm = {
+  unitCost: number;
+  currency: string;
+  supplierId: string | null;
+  supplierReference: string;
+  discountPct: number;
+  leadTimeDays: number | null;
+  validUntil: string | null;
+  notes: string;
+  replaceExisting: boolean;
+};
+export function ManualPriceModal({
+  item,
+  suppliers,
+  busy,
+  onCancel,
+  onSubmit,
+  onClear,
+}: {
+  item: any;
+  suppliers: { id: string; companyName: string }[];
+  busy: boolean;
+  onCancel(): void;
+  onSubmit(value: PriceForm): void;
+  onClear(): void;
+}) {
+  const [form, setForm] = useState<PriceForm>({
+    unitCost: Number(item.manualBaseUnitCost ?? item.appliedUnitPrice ?? 0),
+    currency: item.appliedCurrency || item.boqCurrency || "EGP",
+    supplierId: item.appliedSupplierId || null,
+    supplierReference: item.manualSupplierReference || "",
+    discountPct: Number(item.manualDiscountPct ?? 0),
+    leadTimeDays: item.manualLeadTimeDays ?? null,
+    validUntil: item.manualValidUntil?.slice(0, 10) || null,
+    notes: item.manualPriceNotes || "",
+    replaceExisting: false,
+  });
+  const net =
+      Math.round(form.unitCost * (1 - form.discountPct / 100) * 100) / 100,
+    total = Math.round(net * Number(item.quantity) * 100) / 100;
+  return (
+    <div
+      className={overlay}
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="price-title"
+    >
+      <form
+        className="card w-full max-w-2xl space-y-4"
+        onSubmit={(e) => {
+          e.preventDefault();
+          const replacing =
+            item.appliedUnitPrice !== null && item.priceSource !== "MANUAL";
+          if (
+            replacing &&
+            !window.confirm(
+              "Replace the currently applied supplier price with this manual price?",
+            )
+          )
+            return;
+          onSubmit({ ...form, replaceExisting: replacing });
+        }}
+      >
+        <h2 id="price-title" className="text-xl font-semibold">
+          {item.priceSource === "MANUAL"
+            ? "Change Manual Price"
+            : "Set Manual Price"}
+        </h2>
+        <p>
+          {item.rawDescription} · Quantity {String(item.quantity)}
+        </p>
+        <div className="grid gap-3 md:grid-cols-2">
+          <label>
+            Unit Cost *
+            <input
+              autoFocus
+              required
+              type="number"
+              min="0.01"
+              step="0.01"
+              className="input"
+              value={form.unitCost}
+              onChange={(e) =>
+                setForm({ ...form, unitCost: Number(e.target.value) })
+              }
+            />
+          </label>
+          <label>
+            Currency *
+            <input
+              required
+              pattern="[A-Za-z]{3}"
+              maxLength={3}
+              className="input uppercase"
+              value={form.currency}
+              onChange={(e) =>
+                setForm({ ...form, currency: e.target.value.toUpperCase() })
+              }
+            />
+          </label>
+          <label>
+            Supplier (optional)
+            <select
+              className="input"
+              value={form.supplierId || ""}
+              onChange={(e) =>
+                setForm({ ...form, supplierId: e.target.value || null })
+              }
+            >
+              <option value="">No supplier</option>
+              {suppliers.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.companyName}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Supplier Reference
+            <input
+              className="input"
+              maxLength={200}
+              value={form.supplierReference}
+              onChange={(e) =>
+                setForm({ ...form, supplierReference: e.target.value })
+              }
+            />
+          </label>
+          <label>
+            Discount %
+            <input
+              className="input"
+              type="number"
+              min="0"
+              max="100"
+              step="0.001"
+              value={form.discountPct}
+              onChange={(e) =>
+                setForm({ ...form, discountPct: Number(e.target.value) })
+              }
+            />
+          </label>
+          <label>
+            Lead Time Days
+            <input
+              className="input"
+              type="number"
+              min="0"
+              max="3650"
+              value={form.leadTimeDays ?? ""}
+              onChange={(e) =>
+                setForm({
+                  ...form,
+                  leadTimeDays: e.target.value ? Number(e.target.value) : null,
+                })
+              }
+            />
+          </label>
+          <label>
+            Valid Until
+            <input
+              className="input"
+              type="date"
+              value={form.validUntil || ""}
+              onChange={(e) =>
+                setForm({ ...form, validUntil: e.target.value || null })
+              }
+            />
+          </label>
+        </div>
+        <label className="block">
+          Notes
+          <textarea
+            className="input h-20"
+            maxLength={2000}
+            value={form.notes}
+            onChange={(e) => setForm({ ...form, notes: e.target.value })}
+          />
+        </label>
+        <p className="notice">
+          Net unit cost: {net.toLocaleString()} {form.currency} · Total:{" "}
+          {Number(item.quantity).toLocaleString()} × {net.toLocaleString()} ={" "}
+          {total.toLocaleString()} {form.currency}
+        </p>
+        <div className="flex justify-between gap-2">
+          <div>
+            {item.appliedUnitPrice !== null && (
+              <button
+                type="button"
+                className="btn-secondary"
+                disabled={busy}
+                onClick={onClear}
+              >
+                Clear Price
+              </button>
+            )}
+          </div>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              className="btn-secondary"
+              disabled={busy}
+              onClick={onCancel}
+            >
+              Cancel
+            </button>
+            <button className="btn-primary" disabled={busy}>
+              {busy ? "Saving…" : "Save Price"}
+            </button>
+          </div>
+        </div>
+      </form>
+    </div>
+  );
+}

@@ -15,10 +15,32 @@ const schema = z.object({
   projectId: z.string().min(1).optional(),
   targetBoqId: z.string().min(1).optional(),
   name: z.string().min(1).max(200),
+  revision: z.number().int().min(0).max(9999).default(0),
+  currency: z
+    .string()
+    .regex(/^[A-Z]{3}$/)
+    .optional(),
   sheetName: z.string().min(1),
   headerRow: z.number().int().positive(),
   mapping: z.record(z.number().int().positive()),
   skipReviewRows: z.boolean().default(false),
+  defaultQuantityOne: z.boolean().default(false),
+  descriptionOverrides: z
+    .record(
+      z.string(),
+      z.object({
+        category: z.string().max(80).nullable().optional(),
+        ratedCurrent: z.number().nullable().optional(),
+        poles: z.number().nullable().optional(),
+        breakingCapacity: z.number().nullable().optional(),
+        manufacturer: z.string().max(120).nullable().optional(),
+        conductorMaterial: z.string().max(40).nullable().optional(),
+        insulation: z.string().max(80).nullable().optional(),
+        cableCores: z.number().nullable().optional(),
+        cableSize: z.number().nullable().optional(),
+      }),
+    )
+    .default({}),
 });
 export async function POST(req: NextRequest) {
   try {
@@ -37,7 +59,12 @@ export async function POST(req: NextRequest) {
     const workbook = await readWorkbook(file),
       sheet = workbook.getWorksheet(input.sheetName);
     if (!sheet) throw new ExcelError("Selected sheet no longer exists.");
-    const analysis = analyzeWorkbook(sheet, input.headerRow, input.mapping);
+    const analysis = analyzeWorkbook(
+      sheet,
+      input.headerRow,
+      input.mapping,
+      input.defaultQuantityOne,
+    );
     if (analysis.summary.reviewRows && !input.skipReviewRows)
       throw new ExcelError(
         "Some rows require review. Correct the workbook or explicitly confirm skipping them.",
@@ -47,126 +74,138 @@ export async function POST(req: NextRequest) {
       throw new ExcelError(
         "No importable BOQ rows found. Check the header row and mappings.",
       );
-    const result = await prisma.$transaction(
-      async (tx) => {
-        if (uploadId) {
-          await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${uploadId}))`;
-          const upload = await tx.excelUpload.findFirst({
-            where: {
-              id: uploadId,
-              userId: guard.userId!,
-              expiresAt: { gt: new Date() },
-            },
-          });
-          if (!upload)
-            throw new ExcelError(
-              "Upload expired. Select the workbook again.",
-              404,
-            );
-          if (upload.importedBoqId)
-            return { id: upload.importedBoqId, repeated: true };
-        }
-        const target = input.targetBoqId
-          ? await tx.bOQ.findUnique({ where: { id: input.targetBoqId } })
-          : null;
-        const project = input.projectId
-          ? await tx.project.findFirst({
-              where: { id: input.projectId, deletedAt: null },
-            })
-          : null;
-        if ((input.targetBoqId && !target) || (!target && !project))
-          throw new ExcelError("Selected project or BOQ was not found.", 404);
-        const boq =
-          target ??
-          (await tx.bOQ.create({
-            data: {
-              projectId: project!.id,
-              name: input.name,
-              currency: project!.currency,
-              sourceType: "EXCEL_IMPORT",
-              excelImports: {
-                create: {
-                  fileName: file.name,
-                  sheetName: input.sheetName,
-                  headerRow: input.headerRow,
-                  mapping: input.mapping,
-                  importedRows: analysis.items.length,
-                  createdBy: guard.userId!,
-                },
-              },
-            },
-          }));
-        if (target)
-          await tx.excelImport.create({
-            data: {
-              boqId: target.id,
-              fileName: file.name,
-              sheetName: input.sheetName,
-              headerRow: input.headerRow,
-              mapping: input.mapping,
-              importedRows: analysis.items.length,
-              createdBy: guard.userId!,
-            },
-          });
-        const startingLine = target
-          ? ((
-              await tx.bOQItem.aggregate({
-                where: { boqId: boq.id },
-                _max: { lineNo: true },
-              })
-            )._max.lineNo ?? 0)
-          : 0;
-        for (let offset = 0; offset < analysis.items.length; offset += 500) {
-          await tx.bOQItem.createMany({
-            data: analysis.items.slice(offset, offset + 500).map((row, i) => ({
-              boqId: boq.id,
-              lineNo: startingLine + offset + i + 1,
-              originalRowNumber: row.rowNumber,
-              rawDescription: row.description,
-              quantity: row.quantity,
-              unit: row.fields.unit || "NO",
-              itemNumber: row.fields.itemNumber || null,
-              manufacturerRequirement: row.fields.manufacturer || null,
-              modelRequirement: row.fields.model || null,
-              remarks: row.fields.remarks || null,
-              parsedSpec: {
-                ...parseBoqDescription(row.description),
-                ...(row.fields.manufacturer
-                  ? {
-                      manufacturer:
-                        parseBoqDescription(row.fields.manufacturer)
-                          .manufacturer || row.fields.manufacturer,
-                    }
-                  : {}),
-              } as unknown as Prisma.InputJsonValue,
-              status: "UNMATCHED",
-            })),
-          });
-        }
-        await tx.auditLog.create({
-          data: {
-            userId: guard.userId,
-            action: "BOQ_IMPORTED",
-            entity: "BOQ",
-            entityId: boq.id,
-            newValue: {
-              fileName: file.name,
-              sheetName: input.sheetName,
-              summary: analysis.summary,
-              mode: target ? "APPEND" : "CREATE",
-              skippedRows: analysis.issues,
-            } as Prisma.InputJsonValue,
+    const preparedItems = analysis.items.map((row) => {
+      const correction = input.descriptionOverrides[String(row.rowNumber)];
+      return {
+        ...row,
+        parsedSpec: {
+          ...parseBoqDescription(row.description),
+          ...(row.fields.manufacturer
+            ? {
+                manufacturer:
+                  parseBoqDescription(row.fields.manufacturer).manufacturer ||
+                  row.fields.manufacturer,
+              }
+            : {}),
+          ...(correction
+            ? {
+                ...correction,
+                currentA: correction.ratedCurrent,
+                breakingCapacityKA: correction.breakingCapacity,
+              }
+            : {}),
+        } as unknown as Prisma.InputJsonValue,
+      };
+    });
+    const result = await prisma.$transaction(async (tx) => {
+      if (uploadId) {
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${uploadId}))`;
+        const upload = await tx.excelUpload.findFirst({
+          where: {
+            id: uploadId,
+            userId: guard.userId!,
+            expiresAt: { gt: new Date() },
           },
         });
-        if (uploadId)
-          await tx.excelUpload.update({
-            where: { id: uploadId },
-            data: { importedBoqId: boq.id },
-          });
-        return { id: boq.id, repeated: false };
-      },
-      { timeout: 45000 },
-    );
+        if (!upload)
+          throw new ExcelError(
+            "Upload expired. Select the workbook again.",
+            404,
+          );
+        if (upload.importedBoqId)
+          return { id: upload.importedBoqId, repeated: true };
+      }
+      const target = input.targetBoqId
+        ? await tx.bOQ.findUnique({ where: { id: input.targetBoqId } })
+        : null;
+      const project = input.projectId
+        ? await tx.project.findFirst({
+            where: { id: input.projectId, deletedAt: null },
+          })
+        : null;
+      if ((input.targetBoqId && !target) || (!target && !project))
+        throw new ExcelError("Selected project or BOQ was not found.", 404);
+      const boq =
+        target ??
+        (await tx.bOQ.create({
+          data: {
+            projectId: project!.id,
+            name: input.name,
+            version: input.revision,
+            currency: input.currency ?? project!.currency,
+            sourceType: "EXCEL_IMPORT",
+            excelImports: {
+              create: {
+                fileName: file.name,
+                sheetName: input.sheetName,
+                headerRow: input.headerRow,
+                mapping: input.mapping,
+                importedRows: analysis.items.length,
+                createdBy: guard.userId!,
+              },
+            },
+          },
+        }));
+      if (target)
+        await tx.excelImport.create({
+          data: {
+            boqId: target.id,
+            fileName: file.name,
+            sheetName: input.sheetName,
+            headerRow: input.headerRow,
+            mapping: input.mapping,
+            importedRows: analysis.items.length,
+            createdBy: guard.userId!,
+          },
+        });
+      const startingLine = target
+        ? ((
+            await tx.bOQItem.aggregate({
+              where: { boqId: boq.id },
+              _max: { lineNo: true },
+            })
+          )._max.lineNo ?? 0)
+        : 0;
+      for (let offset = 0; offset < preparedItems.length; offset += 100) {
+        await tx.bOQItem.createMany({
+          data: preparedItems.slice(offset, offset + 100).map((row, i) => ({
+            boqId: boq.id,
+            lineNo: startingLine + offset + i + 1,
+            originalRowNumber: row.rowNumber,
+            rawDescription: row.description,
+            quantity: row.quantity,
+            unit: row.fields.unit || "NO",
+            itemNumber: row.fields.itemNumber || null,
+            manufacturerRequirement: row.fields.manufacturer || null,
+            modelRequirement: row.fields.model || null,
+            remarks: row.fields.remarks || null,
+            parsedSpec: row.parsedSpec,
+            status: "UNMATCHED",
+          })),
+        });
+      }
+      await tx.auditLog.create({
+        data: {
+          userId: guard.userId,
+          action: "BOQ_IMPORTED",
+          entity: "BOQ",
+          entityId: boq.id,
+          newValue: {
+            fileName: file.name,
+            sheetName: input.sheetName,
+            summary: analysis.summary,
+            mode: target ? "APPEND" : "CREATE",
+            skippedRows: analysis.issues,
+          } as Prisma.InputJsonValue,
+        },
+      });
+      if (uploadId)
+        await tx.excelUpload.update({
+          where: { id: uploadId },
+          data: { importedBoqId: boq.id },
+        });
+      return { id: boq.id, repeated: false };
+    });
     const boq = await prisma.bOQ.findUnique({
       where: { id: result.id },
       include: { items: { take: 100, orderBy: { lineNo: "asc" } } },

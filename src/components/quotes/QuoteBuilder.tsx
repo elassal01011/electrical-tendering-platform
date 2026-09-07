@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { requestJson } from "@/lib/client/request";
 import { commercialTotals } from "@/lib/services/quotes/commercial";
+import { boqItemReadyForQuote } from "@/lib/services/pricing/boqPricing";
 type Line = {
   description: string;
   manufacturer: string;
@@ -10,6 +11,7 @@ type Line = {
   quantity: number;
   unit: string;
   unitCost: number;
+  priceSource?: string;
   unitSell: number;
 };
 const empty: Line = {
@@ -19,6 +21,7 @@ const empty: Line = {
   quantity: 1,
   unit: "NO",
   unitCost: 0,
+  priceSource: "MANUAL",
   unitSell: 0,
 };
 const steps = [
@@ -117,31 +120,21 @@ export function QuoteBuilder({
         throw new Error(
           "This BOQ exceeds the 500-line quotation limit. Divide the commercial scope into smaller quotations.",
         );
-      if (
-        d.boq.items.some(
-          (i: any) => !["MATCHED", "MANUAL_OVERRIDE"].includes(i.status),
-        )
-      )
+      if (d.boq.items.some((i: any) => !boqItemReadyForQuote(i, currency)))
         throw new Error(
-          "Complete engineering review before adding BOQ items to a quotation.",
-        );
-      if (
-        d.boq.items.some(
-          (i: any) =>
-            i.appliedUnitPrice == null || i.appliedCurrency !== currency,
-        )
-      )
-        throw new Error(
-          "Every BOQ item needs a price in the quotation currency before it can be added.",
+          "Every BOQ item needs engineering review or a manual price in the quotation currency.",
         );
       setItems(
         d.boq.items.map((i: any) => ({
           description: i.rawDescription,
-          manufacturer: i.matchedComponent?.manufacturer || "",
-          partNumber: i.matchedComponent?.partNumber || "",
+          manufacturer:
+            i.matchedComponent?.manufacturer || i.manufacturerRequirement || "",
+          partNumber:
+            i.matchedComponent?.partNumber || i.modelRequirement || "",
           quantity: Number(i.quantity),
           unit: i.unit,
           unitCost: Number(i.appliedUnitPrice),
+          priceSource: i.priceSource || "MANUAL",
           unitSell:
             Math.round(
               (Number(i.appliedUnitPrice) / (1 - margin / 100)) * 100,
@@ -288,6 +281,7 @@ export function QuoteBuilder({
                 {items.map((item, i) => (
                   <tr key={i}>
                     {Object.keys(empty)
+                      .filter((key) => key !== "priceSource")
                       .map((key) => [key, item[key as keyof Line]] as const)
                       .map(([key, value]) => (
                         <td key={key}>

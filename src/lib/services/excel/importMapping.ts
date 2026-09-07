@@ -1,4 +1,5 @@
 import { ExcelError } from "./uploadPolicy";
+import { RECOGNIZED_FIELDS } from "./recognizeColumns";
 export const IMPORT_TYPES = [
   "Do Not Import / Preview Only",
   "Product / Component Catalog",
@@ -8,17 +9,12 @@ export const IMPORT_TYPES = [
   "Supplier Data",
   "Generic Data",
 ] as const;
-export const MAPPING_FIELDS = [
-  "partNumber",
-  "description",
-  "manufacturer",
+export const MAPPING_FIELDS: readonly string[] = [
+  ...RECOGNIZED_FIELDS.filter((field) => field !== "unknown"),
   "price",
-  "quantity",
-  "unit",
-  "currency",
   "name",
   "email",
-] as const;
+];
 const aliases: Record<string, string[]> = {
   partNumber: [
     "part number",

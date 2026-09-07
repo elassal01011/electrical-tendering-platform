@@ -47,7 +47,9 @@ export function ExcelImportPanel({
     [skip, setSkip] = useState(false),
     [destination, setDestination] = useState<"create" | "append">("create"),
     [targetBoqId, setTargetBoqId] = useState(""),
-    [boqName, setBoqName] = useState("");
+    [boqName, setBoqName] = useState(""),
+    [revision, setRevision] = useState(0),
+    [currency, setCurrency] = useState("EGP");
   const uploadId = useRef(""),
     inputRef = useRef<HTMLInputElement>(null);
   useEffect(() => {
@@ -167,6 +169,8 @@ export function ExcelImportPanel({
             projectId: destination === "create" ? projectId : undefined,
             targetBoqId: destination === "append" ? targetBoqId : undefined,
             name: boqName.trim() || file.name.replace(/\.xlsx$/i, ""),
+            revision,
+            currency,
             sheetName: preview.sheetName,
             headerRow: preview.headerRow,
             mapping: currentMapping(),
@@ -240,16 +244,38 @@ export function ExcelImportPanel({
           </select>
         </label>
         {destination === "create" ? (
-          <label>
-            BOQ Name
-            <input
-              className="input"
-              maxLength={200}
-              value={boqName}
-              placeholder={file?.name.replace(/\.xlsx$/i, "") || "BOQ name"}
-              onChange={(e) => setBoqName(e.target.value)}
-            />
-          </label>
+          <div className="grid grid-cols-3 gap-2">
+            <label>
+              BOQ Name
+              <input
+                className="input"
+                maxLength={200}
+                value={boqName}
+                placeholder={file?.name.replace(/\.xlsx$/i, "") || "BOQ name"}
+                onChange={(e) => setBoqName(e.target.value)}
+              />
+            </label>
+            <label>
+              Revision
+              <input
+                className="input"
+                type="number"
+                min="0"
+                max="9999"
+                value={revision}
+                onChange={(e) => setRevision(Number(e.target.value))}
+              />
+            </label>
+            <label>
+              Currency
+              <input
+                className="input uppercase"
+                maxLength={3}
+                value={currency}
+                onChange={(e) => setCurrency(e.target.value.toUpperCase())}
+              />
+            </label>
+          </div>
         ) : (
           <label>
             Existing BOQ

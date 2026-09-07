@@ -9,14 +9,11 @@ import { EngineeringReview } from "@/components/boq/EngineeringReview";
 import {
   BoqItemModal,
   CreateBoqModal,
+  ManualPriceModal,
   type ItemForm,
+  type PriceForm,
 } from "@/components/boq/BoqForms";
-import {
-  PageHeader,
-  DataTable,
-  StatusBadge,
-  EmptyState,
-} from "@/components/ui";
+import { PageHeader, DataTable, EmptyState } from "@/components/ui";
 export default function BOQ() {
   const { data: session } = useSession();
   const can = (p: string) => hasPermission(session?.user.roles ?? [], p);
@@ -34,7 +31,15 @@ export default function BOQ() {
     [busy, setBusy] = useState(false),
     [review, setReview] = useState(""),
     [creating, setCreating] = useState(false),
-    [itemForm, setItemForm] = useState<any>(null);
+    [itemForm, setItemForm] = useState<any>(null),
+    [priceItem, setPriceItem] = useState<any>(null),
+    [suppliers, setSuppliers] = useState<any[]>([]),
+    [summary, setSummary] = useState<any>(null),
+    [filter, setFilter] = useState("all"),
+    [bulk, setBulk] = useState(false),
+    [bulkPrices, setBulkPrices] = useState<
+      Record<string, { unitCost: string; currency: string }>
+    >({});
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     requestJson("/api/projects")
@@ -51,6 +56,12 @@ export default function BOQ() {
       .catch((e) => setError(e.message));
   }, []);
   useEffect(() => {
+    if (can("pricing.edit") || can("boq.edit"))
+      requestJson("/api/parties?type=SUPPLIER")
+        .then((d) => setSuppliers(d.rows))
+        .catch(() => setSuppliers([]));
+  }, [session]);
+  useEffect(() => {
     if (projectId)
       requestJson("/api/projects/" + projectId)
         .then((d) => setBoqs(d.project.boqs))
@@ -59,15 +70,23 @@ export default function BOQ() {
   async function load() {
     if (!boqId) return;
     const d = await requestJson(
-      "/api/boq/" + boqId + "?page=" + page + "&q=" + encodeURIComponent(q),
+      "/api/boq/" +
+        boqId +
+        "?page=" +
+        page +
+        "&filter=" +
+        filter +
+        "&q=" +
+        encodeURIComponent(q),
     );
     setBoq(d.boq);
     setTotal(d.total);
+    setSummary(d.summary);
   }
   useEffect(() => {
     const t = setTimeout(() => load().catch((e) => setError(e.message)), 200);
     return () => clearTimeout(t);
-  }, [boqId, page, q]);
+  }, [boqId, page, q, filter]);
   async function action(kind: string) {
     if (!boqId) return;
     setBusy(true);
@@ -156,6 +175,123 @@ export default function BOQ() {
     try {
       await requestJson("/api/boq/items/" + item.id, { method: "DELETE" });
       setNotice("BOQ item deleted successfully.");
+      await load();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function savePrice(input: PriceForm) {
+    setBusy(true);
+    setError("");
+    try {
+      await requestJson("/api/boq/items/" + priceItem.id + "/price", {
+        method: "PUT",
+        body: JSON.stringify(input),
+      });
+      setPriceItem(null);
+      setNotice("Manual BOQ price saved successfully.");
+      await load();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function clearPrice() {
+    if (
+      !window.confirm(
+        "Clear the applied price from this BOQ item? Supplier catalog records will not be changed.",
+      )
+    )
+      return;
+    setBusy(true);
+    setError("");
+    try {
+      await requestJson("/api/boq/items/" + priceItem.id + "/price", {
+        method: "DELETE",
+      });
+      setPriceItem(null);
+      setNotice("BOQ price cleared.");
+      await load();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function autoPriceItem(itemId: string) {
+    setBusy(true);
+    setError("");
+    try {
+      const data = await requestJson("/api/boq/" + boqId + "/apply-prices", {
+        method: "POST",
+        body: JSON.stringify({ itemId }),
+      });
+      const result = data.results[0];
+      setNotice(
+        result?.source === "UNPRICED"
+          ? result.message
+          : "Automatic price applied.",
+      );
+      await load();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  function openBulk() {
+    setBulkPrices(
+      Object.fromEntries(
+        (boq?.items || []).map((item: any) => [
+          item.id,
+          {
+            unitCost:
+              item.appliedUnitPrice === null
+                ? ""
+                : String(item.manualBaseUnitCost ?? item.appliedUnitPrice),
+            currency: item.appliedCurrency || boq.currency,
+          },
+        ]),
+      ),
+    );
+    setBulk(true);
+  }
+  async function saveBulk() {
+    const priced = boq.items.filter(
+      (item: any) => Number(bulkPrices[item.id]?.unitCost) > 0,
+    );
+    const replaces = priced.some(
+      (item: any) =>
+        item.appliedUnitPrice !== null && item.priceSource !== "MANUAL",
+    );
+    if (
+      replaces &&
+      !window.confirm(
+        "Replace the currently applied supplier prices in these rows with manual prices?",
+      )
+    )
+      return;
+    setBusy(true);
+    setError("");
+    try {
+      await requestJson("/api/boq/" + boqId + "/prices", {
+        method: "PUT",
+        body: JSON.stringify({
+          prices: priced.map((item: any) => ({
+            itemId: item.id,
+            price: {
+              unitCost: Number(bulkPrices[item.id].unitCost),
+              currency: bulkPrices[item.id].currency,
+              replaceExisting: replaces,
+            },
+          })),
+        }),
+      });
+      setBulk(false);
+      setNotice(`${priced.length} BOQ prices saved.`);
       await load();
     } catch (e) {
       setError((e as Error).message);
@@ -284,6 +420,31 @@ export default function BOQ() {
             Price next 100 reviewed rows
           </button>
         )}
+        {(can("pricing.edit") || can("boq.edit")) && (
+          <button
+            className="btn-secondary"
+            disabled={!boqId || busy}
+            onClick={openBulk}
+          >
+            Edit Prices
+          </button>
+        )}
+        <select
+          className="input max-w-xs"
+          aria-label="Filter BOQ pricing status"
+          value={filter}
+          onChange={(e) => {
+            setFilter(e.target.value);
+            setPage(1);
+          }}
+        >
+          <option value="all">All</option>
+          <option value="priced">Priced</option>
+          <option value="unpriced">Unpriced</option>
+          <option value="manual">Manual Price</option>
+          <option value="supplier">Supplier Price</option>
+          <option value="review">Needs Review</option>
+        </select>
         <input
           className="input max-w-xs"
           placeholder="Filter description…"
@@ -324,6 +485,16 @@ export default function BOQ() {
           onSubmit={saveItem}
         />
       )}
+      {priceItem && (
+        <ManualPriceModal
+          item={{ ...priceItem, boqCurrency: boq?.currency }}
+          suppliers={suppliers}
+          busy={busy}
+          onCancel={() => setPriceItem(null)}
+          onSubmit={savePrice}
+          onClear={clearPrice}
+        />
+      )}
       {review && (
         <div className="mb-5">
           <EngineeringReview
@@ -351,16 +522,130 @@ export default function BOQ() {
             </div>
             <span className="badge">{total} ROWS</span>
           </div>
+          {summary && (
+            <div className="grid grid-cols-2 gap-3 mb-5 lg:grid-cols-6">
+              {Object.entries({
+                Items: summary.items,
+                Priced: summary.priced,
+                Unpriced: summary.unpriced,
+                Manual: summary.manual,
+                "Supplier priced": summary.supplierPriced,
+              }).map(([label, value]) => (
+                <div className="metric" key={label}>
+                  <span>{label}</span>
+                  <strong>{String(value)}</strong>
+                </div>
+              ))}
+              <div className="metric">
+                <span>Total material cost</span>
+                <strong>
+                  {Object.entries(summary.totalsByCurrency)
+                    .map(
+                      ([currency, value]) =>
+                        `${Number(value).toLocaleString()} ${currency}`,
+                    )
+                    .join(" · ") || "—"}
+                </strong>
+              </div>
+            </div>
+          )}
+          {bulk && (
+            <section className="notice mb-5 space-y-3">
+              <h3 className="font-medium">Edit Prices — current page</h3>
+              <div className="table-wrap">
+                <table className="data-table">
+                  <thead>
+                    <tr>
+                      <th>Item</th>
+                      <th>Qty</th>
+                      <th>Unit Cost</th>
+                      <th>Currency</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {boq.items.map((item: any) => (
+                      <tr key={item.id}>
+                        <td>{item.itemNumber || item.lineNo}</td>
+                        <td>{String(item.quantity)}</td>
+                        <td>
+                          <input
+                            className="input"
+                            type="number"
+                            min="0.01"
+                            step="0.01"
+                            value={bulkPrices[item.id]?.unitCost ?? ""}
+                            onChange={(e) =>
+                              setBulkPrices((current) => ({
+                                ...current,
+                                [item.id]: {
+                                  ...(current[item.id] || {
+                                    currency: boq.currency,
+                                  }),
+                                  unitCost: e.target.value,
+                                },
+                              }))
+                            }
+                          />
+                        </td>
+                        <td>
+                          <input
+                            className="input uppercase"
+                            maxLength={3}
+                            value={
+                              bulkPrices[item.id]?.currency ?? boq.currency
+                            }
+                            onChange={(e) =>
+                              setBulkPrices((current) => ({
+                                ...current,
+                                [item.id]: {
+                                  ...(current[item.id] || { unitCost: "" }),
+                                  currency: e.target.value.toUpperCase(),
+                                },
+                              }))
+                            }
+                          />
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <div className="flex gap-2">
+                <button
+                  className="btn-primary"
+                  disabled={
+                    busy ||
+                    !Object.values(bulkPrices).some(
+                      (row) => Number(row.unitCost) > 0,
+                    )
+                  }
+                  onClick={saveBulk}
+                >
+                  Save All
+                </button>
+                <button
+                  className="btn-secondary"
+                  disabled={busy}
+                  onClick={() => setBulk(false)}
+                >
+                  Cancel
+                </button>
+              </div>
+            </section>
+          )}
           <DataTable
             headers={[
               "Item",
               "Description",
-              "Qty / unit",
-              "Status",
-              "Matched component",
-              "Confidence",
-              "Applied cost",
-              "Review",
+              "Qty",
+              "Unit",
+              "Manufacturer",
+              "Part Number",
+              "Selected Component",
+              "Unit Cost",
+              "Price Source",
+              "Currency",
+              "Total Cost",
               "Actions",
             ]}
           >
@@ -368,12 +653,10 @@ export default function BOQ() {
               <tr key={i.id}>
                 <td>{i.itemNumber || i.lineNo}</td>
                 <td className="min-w-64 max-w-lg">{i.rawDescription}</td>
-                <td>
-                  {i.quantity} {i.unit}
-                </td>
-                <td>
-                  <StatusBadge status={i.status} />
-                </td>
+                <td>{String(i.quantity)}</td>
+                <td>{i.unit}</td>
+                <td>{i.manufacturerRequirement || "—"}</td>
+                <td>{i.modelRequirement || "—"}</td>
                 <td>
                   {i.matchedComponent ? (
                     <>
@@ -387,47 +670,103 @@ export default function BOQ() {
                   )}
                 </td>
                 <td>
-                  {can("boq.edit") && (
-                    <div className="flex gap-2">
-                      <button
-                        className="btn-secondary"
-                        disabled={busy}
-                        onClick={() => setItemForm(i)}
-                      >
-                        Edit
-                      </button>
-                      <button
-                        className="btn-secondary"
-                        disabled={busy}
-                        onClick={() => deleteItem(i)}
-                      >
-                        Delete
-                      </button>
-                    </div>
-                  )}
-                </td>
-                <td title={i.matchReason}>
-                  {i.matchScore === null ? "—" : Number(i.matchScore) + "%"}
-                </td>
-                <td>
                   {i.appliedUnitPrice === null
                     ? "Not priced"
-                    : Number(i.appliedUnitPrice).toLocaleString() +
-                      " " +
-                      i.appliedCurrency}
-                  <div className="muted text-xs">
-                    {i.appliedSupplier?.companyName}
-                  </div>
+                    : Number(i.appliedUnitPrice).toLocaleString()}
                 </td>
                 <td>
-                  {can("boq.review") && (
-                    <button
-                      className="btn-secondary"
-                      onClick={() => setReview(i.id)}
-                    >
-                      Review
-                    </button>
+                  {i.priceSource ? (
+                    <span className="badge">
+                      {i.priceSource === "MANUAL"
+                        ? "Manual"
+                        : i.priceSource === "SUPPLIER_PRICE"
+                          ? `Supplier${i.appliedSupplier?.companyName ? ": " + i.appliedSupplier.companyName : ""}`
+                          : "Catalog / Auto"}
+                    </span>
+                  ) : (
+                    "—"
                   )}
+                </td>
+                <td>{i.appliedCurrency || "—"}</td>
+                <td>
+                  {i.appliedUnitPrice === null
+                    ? "—"
+                    : (
+                        Number(i.quantity) * Number(i.appliedUnitPrice)
+                      ).toLocaleString()}
+                </td>
+                <td>
+                  <div className="flex flex-wrap gap-2">
+                    {(can("pricing.edit") || can("boq.edit")) && (
+                      <>
+                        <button
+                          className="btn-secondary"
+                          disabled={busy}
+                          onClick={() => setPriceItem(i)}
+                        >
+                          {i.priceSource === "MANUAL"
+                            ? "Change Manual Price"
+                            : "Set Manual Price"}
+                        </button>
+                        {i.appliedUnitPrice !== null && (
+                          <button
+                            className="btn-secondary"
+                            disabled={busy}
+                            onClick={() => {
+                              setPriceItem(i);
+                            }}
+                          >
+                            Clear Price
+                          </button>
+                        )}
+                        {i.status === "MATCHED" &&
+                          i.appliedUnitPrice === null && (
+                            <>
+                              <button
+                                className="btn-secondary"
+                                disabled={busy}
+                                onClick={() => autoPriceItem(i.id)}
+                              >
+                                Find Supplier Price
+                              </button>
+                              <button
+                                className="btn-secondary"
+                                disabled={busy}
+                                onClick={() => autoPriceItem(i.id)}
+                              >
+                                Auto Price
+                              </button>
+                            </>
+                          )}
+                      </>
+                    )}
+                    {can("boq.review") && (
+                      <button
+                        className="btn-secondary"
+                        onClick={() => setReview(i.id)}
+                      >
+                        Review
+                      </button>
+                    )}
+                    {can("boq.edit") && (
+                      <>
+                        <button
+                          className="btn-secondary"
+                          disabled={busy}
+                          onClick={() => setItemForm(i)}
+                        >
+                          Edit
+                        </button>
+                        <button
+                          className="btn-secondary"
+                          disabled={busy}
+                          onClick={() => deleteItem(i)}
+                        >
+                          Delete
+                        </button>
+                      </>
+                    )}
+                  </div>
                 </td>
               </tr>
             ))}

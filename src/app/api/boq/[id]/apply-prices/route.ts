@@ -18,7 +18,11 @@ export async function POST(
       include: {
         project: true,
         items: {
-          where: { status: "MATCHED", appliedUnitPrice: null },
+          where: {
+            status: "MATCHED",
+            appliedUnitPrice: null,
+            ...(typeof body.itemId === "string" ? { id: body.itemId } : {}),
+          },
           include: { matchedComponent: true },
           take: 100,
         },
@@ -125,7 +129,7 @@ export async function POST(
           await tx.auditLog.create({
             data: {
               userId: g.userId,
-              action: "BOQ_PRICE_APPLIED",
+              action: "BOQ_PRICE_AUTO_APPLIED",
               entity: "BOQItem",
               entityId: item.id,
               newValue: {

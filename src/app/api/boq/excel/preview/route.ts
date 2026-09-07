@@ -18,6 +18,10 @@ export async function POST(req: NextRequest) {
         sheetName: z.string().optional(),
         headerRow: z.number().int().positive().optional(),
         mapping: z.record(z.number().int().positive()).optional(),
+        defaultQuantityOne: z.boolean().default(false),
+        descriptionOverrides: z
+          .record(z.string(), z.record(z.unknown()))
+          .optional(),
       })
       .parse(config);
     const workbook = await readWorkbook(file);
@@ -29,7 +33,12 @@ export async function POST(req: NextRequest) {
       items: _items,
       issues,
       ...analysis
-    } = analyzeWorkbook(sheet, input.headerRow, input.mapping);
+    } = analyzeWorkbook(
+      sheet,
+      input.headerRow,
+      input.mapping,
+      input.defaultQuantityOne,
+    );
     return NextResponse.json({
       fileName: file.name,
       sheets: workbook.worksheets.map((s) => s.name),

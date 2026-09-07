@@ -12,6 +12,11 @@ import {
   suggestMapping,
   validateOptionalMapping,
 } from "@/lib/services/excel/importMapping";
+import {
+  parseElectricalDescription,
+  recognizeColumns,
+  suggestWorkbookTypes,
+} from "@/lib/services/excel/recognizeColumns";
 import { ExcelError } from "@/lib/services/excel/uploadPolicy";
 import { prisma } from "@/lib/db/prisma";
 import type { Prisma } from "@prisma/client";
@@ -42,6 +47,36 @@ export async function POST(req: NextRequest) {
       : workbook.sheets[0];
     if (!sheet) throw new ExcelError("Selected worksheet was not found.");
     const normalized = normalizeSheet(sheet, input.headerRow);
+    const recognition = recognizeColumns(sheet, normalized.headerRow);
+    const descriptionColumn = recognition.find(
+      (column) => column.suggestedField === "description",
+    )?.column;
+    const descriptionKey = normalized.headers.find(
+      (header) => header.column === descriptionColumn,
+    )?.key;
+    const descriptionSuggestions = descriptionKey
+      ? normalized.rows
+          .slice(0, 50)
+          .map((row) => ({
+            rowNumber: row.rowNumber,
+            ...parseElectricalDescription(
+              String(row.data[descriptionKey] ?? ""),
+            ),
+          }))
+          .filter((row) =>
+            [
+              row.category,
+              row.ratedCurrent,
+              row.poles,
+              row.breakingCapacity,
+              row.manufacturer,
+              row.conductorMaterial,
+              row.insulation,
+              row.cableCores,
+              row.cableSize,
+            ].some((value) => value !== null),
+          )
+      : [];
     if (input.action !== "preview")
       validateOptionalMapping(input.mapping, sheet.columnCount);
     const data = {
@@ -108,7 +143,15 @@ export async function POST(req: NextRequest) {
       dataRowCount: normalized.rows.length,
       detectedHeaderRow: sheet.detectedHeaderRow,
       headerConfidence: sheet.headerConfidence,
-      suggestions: suggestMapping(normalized.headers),
+      recognition,
+      descriptionSuggestions,
+      suggestedImportTypes: suggestWorkbookTypes(recognition),
+      suggestions: Object.fromEntries(
+        recognition
+          .filter((row) => row.suggestedField !== "unknown")
+          .map((row) => [row.suggestedField, row.column]),
+      ),
+      legacySuggestions: suggestMapping(normalized.headers),
       valid: input.action === "validate",
     });
   } catch (error) {

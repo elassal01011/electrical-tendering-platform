@@ -35,6 +35,7 @@ export const quoteSchema = z.object({
         quantity: z.number().positive().max(999999999),
         unit: z.string().min(1).max(30).default("NO"),
         unitCost: z.number().nonnegative().max(1e10),
+        priceSource: z.string().max(50).optional(),
         unitSell: z.number().nonnegative().max(1e10),
       }),
     )

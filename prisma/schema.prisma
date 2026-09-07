@@ -344,6 +344,12 @@ model BOQItem {
   appliedCurrency         String?
   priceAppliedAt          DateTime?
   priceSource             String? // SUPPLIER_PRICE | COMPONENT_LIST_PRICE | MANUAL
+  manualBaseUnitCost      Decimal?       @db.Decimal(14, 2)
+  manualDiscountPct       Decimal?       @db.Decimal(6, 3)
+  manualSupplierReference String?
+  manualLeadTimeDays      Int?
+  manualValidUntil        DateTime?
+  manualPriceNotes        String?
   createdAt               DateTime       @default(now())
 }
 
@@ -655,6 +661,7 @@ model QuoteItem {
   unit String @default("NO")
   quantity    Decimal @db.Decimal(12, 3)
   unitCost    Decimal @db.Decimal(14, 2)
+  priceSource String?
   unitSell    Decimal @db.Decimal(14, 2)
   lineTotal   Decimal @db.Decimal(16, 2)
 }

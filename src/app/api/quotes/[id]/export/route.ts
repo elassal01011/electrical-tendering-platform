@@ -52,7 +52,7 @@ export async function GET(
       "Part number",
       "Qty",
       "Unit",
-      ...(internal ? ["Unit cost", "Total cost"] : []),
+      ...(internal ? ["Unit cost", "Price source", "Total cost"] : []),
       "Unit sell",
       "Line total",
     ]);
@@ -64,7 +64,11 @@ export async function GET(
         Number(i.quantity),
         i.unit,
         ...(internal
-          ? [Number(i.unitCost), Number(i.quantity) * Number(i.unitCost)]
+          ? [
+              Number(i.unitCost),
+              i.priceSource || "UNSPECIFIED",
+              Number(i.quantity) * Number(i.unitCost),
+            ]
           : []),
         Number(i.unitSell),
         Number(i.lineTotal),
