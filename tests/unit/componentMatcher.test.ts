@@ -20,6 +20,7 @@ it.each(["currentA", "voltageV", "breakingCapacityKA", "poles"] as const)(
 const candidates: CandidateComponent[] = [
   {
     id: "schneider-nsx250",
+    partNumber: "LV431630",
     manufacturer: "Schneider Electric",
     category: "MCCB",
     currentA: 250,
@@ -116,5 +117,19 @@ describe("component matching engine", () => {
     const ranked = rankCandidates(spec, onlyUnsafe);
     const auto = autoSelectBestMatch(ranked);
     expect(auto).toBeNull();
+  });
+  it("uses an exact part number as a high-priority signal", () => {
+    const exact = rankCandidates(
+      { ...spec, partNumber: "LV431630", model: "LV431630" },
+      candidates,
+    )[0];
+    expect(exact.componentId).toBe("schneider-nsx250");
+    expect(exact.confidence).toBe("HIGH");
+    expect(exact.reasons).toContain("Part number exact match (LV431630)");
+  });
+  it("uses HIGH, MEDIUM and LOW confidence bands", () => {
+    const ranked = rankCandidates(spec, candidates);
+    expect(ranked[0].confidence).toBe("HIGH");
+    expect(ranked.find((result) => result.componentId === "siemens-3va-undersized")?.confidence).toBe("LOW");
   });
 });

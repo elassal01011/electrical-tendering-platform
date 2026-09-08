@@ -19,6 +19,7 @@ import {
 } from "@/lib/services/pricing/writePricingImport";
 import { logPricingImportError } from "@/lib/services/pricing/pricingImportDiagnostics";
 import { apiError } from "@/lib/apiError";
+import { prismaErrorCode } from "@/lib/services/excel/genericDiagnostics";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -88,7 +89,11 @@ export async function POST(
     }
     if (session.leaseToken)
       return NextResponse.json(
-        { error: "This import batch is already running. Retry shortly." },
+        {
+          error: "IMPORT_BATCH_ALREADY_PROCESSING",
+          retryable: true,
+          ...publicCatalogSession(sessionId, session),
+        },
         { status: 409 },
       );
 
@@ -109,8 +114,8 @@ export async function POST(
     if (!claim)
       return NextResponse.json(
         {
-          error:
-            "This import batch was claimed by another request. Retry shortly.",
+          error: "IMPORT_BATCH_ALREADY_PROCESSING",
+          retryable: true,
         },
         { status: 409 },
       );
@@ -220,6 +225,29 @@ export async function POST(
       error,
       session ? `catalog-batch:${session.currentOffset}` : "catalog-batch",
     );
+    if (session && leaseToken && prismaErrorCode(error) === "P2024") {
+      session.status = "IMPORTING";
+      session.lastError = "The database is busy. This batch can be retried.";
+      session.leaseToken = null;
+      session.leaseExpiresAt = null;
+      session.updatedAt = new Date().toISOString();
+      const { rows: _rows, ...retryPatch } = session;
+      await mergeCatalogSession(prisma, sessionId, guard.userId!, retryPatch, {
+        leaseToken,
+      }).catch(() => undefined);
+      return NextResponse.json(
+        {
+          error: "DATABASE_BUSY",
+          retryable: true,
+          importId: sessionId,
+          processedRows: session.processedRows,
+          totalRows: session.totalRows,
+          currentOffset: session.currentOffset,
+          retryAfterMs: 1000,
+        },
+        { status: 503 },
+      );
+    }
     if (session && leaseToken) {
       session.status = "FAILED";
       session.lastError = "The last batch failed. Resume to retry it.";

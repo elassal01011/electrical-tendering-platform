@@ -35,17 +35,27 @@ export function EngineeringReview({
       c.abort();
     };
   }, [q, itemId]);
-  async function select(id: string) {
+  async function select(id: string, replaceManualPrice = false) {
     setBusy(true);
     try {
       await requestJson("/api/boq/items/" + itemId, {
         method: "PATCH",
-        body: JSON.stringify({ componentId: id, notes }),
+        body: JSON.stringify({ componentId: id, notes, replaceManualPrice }),
       });
       onSaved();
       onClose();
     } catch (e) {
-      setError((e as Error).message);
+      const message = (e as Error).message;
+      if (
+        data?.item?.priceSource === "MANUAL" &&
+        !replaceManualPrice &&
+        window.confirm("Changing this component will clear its locked manual price. Continue?")
+      ) {
+        setBusy(false);
+        await select(id, true);
+        return;
+      }
+      setError(message);
     } finally {
       setBusy(false);
     }

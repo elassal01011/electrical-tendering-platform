@@ -11,7 +11,11 @@ const state = vi.hoisted(() => ({
   applied: null as any,
   upload: null as any,
   failBatch: 0,
+  failCode: "P2028",
   batchRequests: 0,
+  stagingWrites: 0,
+  activeQueries: 0,
+  maxActiveQueries: 0,
 }));
 vi.mock("@/lib/auth/apiGuard", () => ({
   requirePermission: async () =>
@@ -63,7 +67,16 @@ vi.mock("@/lib/db/prisma", () => {
   return {
     prisma: {
       party: {
-        findMany: async () => state.suppliers,
+        findMany: async () => {
+          state.activeQueries++;
+          state.maxActiveQueries = Math.max(
+            state.maxActiveQueries,
+            state.activeQueries,
+          );
+          await Promise.resolve();
+          state.activeQueries--;
+          return state.suppliers;
+        },
         createMany: async ({ data }: any) => {
           for (const p of data)
             if (!state.suppliers.some((s) => s.id === p.id))
@@ -71,7 +84,16 @@ vi.mock("@/lib/db/prisma", () => {
         },
       },
       component: {
-        findMany: async () => state.components,
+        findMany: async () => {
+          state.activeQueries++;
+          state.maxActiveQueries = Math.max(
+            state.maxActiveQueries,
+            state.activeQueries,
+          );
+          await Promise.resolve();
+          state.activeQueries--;
+          return state.components;
+        },
         createMany: async ({ data }: any) => {
           for (const p of data)
             if (!state.components.some((s) => s.id === p.id))
@@ -122,6 +144,14 @@ vi.mock("@/lib/db/prisma", () => {
           ],
         }),
       },
+      bOQItem: {
+        updateMany:
+          ({ data }: any) =>
+          () => {
+            state.applied = data;
+            return { count: 1 };
+          },
+      },
       excelUpload: {
         findFirst: async () => state.upload,
         update: async ({ data }: any) => {
@@ -143,6 +173,7 @@ vi.mock("@/lib/db/prisma", () => {
             if (current !== expected) return { count: 0 };
           }
           if (data.extractedData?.leaseToken) state.batchRequests++;
+          if (Array.isArray(data.extractedData?.rows)) state.stagingWrites++;
           state.upload.extractedData = data.extractedData;
           if (data.expiresAt) state.upload.expiresAt = data.expiresAt;
           return { count: 1 };
@@ -163,10 +194,12 @@ vi.mock("@/lib/db/prisma", () => {
         state.batches.push(operations.length);
         if (state.failBatch === state.batches.length)
           throw Object.assign(new Error("Transaction expired"), {
-            code: "P2028",
+            code: state.failCode,
             meta: { error: "Transaction expired" },
           });
-        for (const operation of operations) operation();
+        for (const operation of operations)
+          if (typeof operation === "function") operation();
+          else await operation;
       },
     },
   };
@@ -296,7 +329,11 @@ beforeEach(() => {
   state.applied = null;
   state.upload = null;
   state.failBatch = 0;
+  state.failCode = "P2028";
   state.batchRequests = 0;
+  state.stagingWrites = 0;
+  state.activeQueries = 0;
+  state.maxActiveQueries = 0;
 });
 describe("price catalog", () => {
   it.each(["12,450", "12450", "₹12,450", "EGP 6717.12", "12,450.50"])(
@@ -350,10 +387,12 @@ describe("price catalog", () => {
       });
       expect(state.prices).toHaveLength(4000);
       expect(state.batchRequests).toBe(40);
+      expect(state.stagingWrites).toBe(1);
       expect(state.batches).toHaveLength(80);
       expect(state.batches.every((operations) => operations <= 100)).toBe(true);
       expect(state.suppliers).toHaveLength(1);
       expect(state.components).toHaveLength(4000);
+      expect(state.maxActiveQueries).toBe(1);
     },
     15000,
   );
@@ -420,6 +459,82 @@ describe("price catalog", () => {
     }
     expect(current).toMatchObject({ status: "COMPLETED", processedRows: 300 });
     expect(state.prices).toHaveLength(300);
+  });
+  it("returns retryable progress for P2024 and retries the same batch without duplicates", async () => {
+    await importCatalog(
+      await stagedRequest(100, { action: "validate", mapping }),
+    );
+    const started = await (
+      await startImport(
+        new NextRequest("http://localhost/api/pricing/import/start", {
+          method: "POST",
+          body: JSON.stringify({ uploadId: "session-1" }),
+        }),
+      )
+    ).json();
+    state.failCode = "P2024";
+    state.failBatch = 1;
+    const busy = await importBatch(
+      new NextRequest("http://localhost/batch", {
+        method: "POST",
+        body: JSON.stringify({ offset: started.currentOffset, limit: 100 }),
+      }),
+      context,
+    );
+    expect(busy.status).toBe(503);
+    expect(await busy.json()).toMatchObject({
+      error: "DATABASE_BUSY",
+      retryable: true,
+      importId: "session-1",
+      processedRows: 0,
+      totalRows: 100,
+      currentOffset: 0,
+    });
+    expect(state.upload.extractedData.status).toBe("IMPORTING");
+    expect(state.prices).toHaveLength(0);
+    state.failBatch = 0;
+    const resumed = await importBatch(
+      new NextRequest("http://localhost/batch", {
+        method: "POST",
+        body: JSON.stringify({ offset: 0, limit: 100 }),
+      }),
+      context,
+    );
+    expect(await resumed.json()).toMatchObject({
+      status: "COMPLETED",
+      processedRows: 100,
+      importedRows: 100,
+    });
+    expect(state.prices).toHaveLength(100);
+  });
+  it("allows only one simultaneous request to claim an import batch", async () => {
+    await importCatalog(
+      await stagedRequest(100, { action: "validate", mapping }),
+    );
+    await startImport(
+      new NextRequest("http://localhost/api/pricing/import/start", {
+        method: "POST",
+        body: JSON.stringify({ uploadId: "session-1" }),
+      }),
+    );
+    const request = () =>
+      importBatch(
+        new NextRequest("http://localhost/batch", {
+          method: "POST",
+          body: JSON.stringify({ offset: 0, limit: 100 }),
+        }),
+        context,
+      );
+    const responses = await Promise.all([request(), request()]);
+    expect(responses.map((response) => response.status).sort()).toEqual([
+      200, 409,
+    ]);
+    const conflict = responses.find((response) => response.status === 409)!;
+    expect(await conflict.json()).toMatchObject({
+      error: "IMPORT_BATCH_ALREADY_PROCESSING",
+      retryable: true,
+    });
+    expect(state.prices).toHaveLength(100);
   });
   it("cancels a persisted import session", async () => {
     await importCatalog(

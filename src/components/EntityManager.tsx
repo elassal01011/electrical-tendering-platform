@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { useSession } from "next-auth/react";
 import { hasPermission } from "@/lib/auth/permissions";
 import { requestJson } from "@/lib/client/request";
@@ -26,6 +26,11 @@ export function EntityManager({
   permission,
   defaults = {},
   resultKey = "rows",
+  refreshKey = 0,
+  headerActions,
+  addLabel = "+ Add record",
+  searchPlaceholder = "Search…",
+  summaryCards = [],
 }: {
   title: string;
   description: string;
@@ -35,6 +40,11 @@ export function EntityManager({
   permission: string;
   defaults?: Record<string, unknown>;
   resultKey?: string;
+  refreshKey?: number;
+  headerActions?: ReactNode;
+  addLabel?: string;
+  searchPlaceholder?: string;
+  summaryCards?: { key: string; label: string }[];
 }) {
   const [rows, setRows] = useState<Record<string, any>[]>([]),
     [q, setQ] = useState(""),
@@ -43,6 +53,7 @@ export function EntityManager({
     [creating, setCreating] = useState(false),
     [busy, setBusy] = useState(false),
     [notice, setNotice] = useState("");
+  const [summary, setSummary] = useState<Record<string, unknown>>({});
   const { data: session } = useSession();
   useEffect(() => {
     const controller = new AbortController();
@@ -57,6 +68,7 @@ export function EntityManager({
       )
         .then((d) => {
           setRows(d[resultKey] ?? []);
+          setSummary(d.summary ?? {});
           setError("");
         })
         .catch((e) => {
@@ -70,7 +82,7 @@ export function EntityManager({
       clearTimeout(timer);
       controller.abort();
     };
-  }, [endpoint, q, resultKey]);
+  }, [endpoint, q, resultKey, refreshKey]);
   async function save(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     setBusy(true);
@@ -89,6 +101,7 @@ export function EntityManager({
       });
       const result = await requestJson(endpoint);
       setRows(result[resultKey] ?? []);
+      setSummary(result.summary ?? {});
       setCreating(false);
       setNotice("Saved successfully.");
     } catch (e) {
@@ -100,15 +113,28 @@ export function EntityManager({
   return (
     <>
       <PageHeader eyebrow="WORKSPACE" title={title} description={description}>
+        {headerActions}
         {hasPermission(session?.user.roles ?? [], permission) && (
           <button
             className="btn-primary"
             onClick={() => setCreating(!creating)}
           >
-            {creating ? "Close form" : "+ Add record"}
+            {creating ? "Close form" : addLabel}
           </button>
         )}
       </PageHeader>
+      {!!summaryCards.length && (
+        <div className="mb-5 grid grid-cols-2 gap-3 lg:grid-cols-5">
+          {summaryCards.map((card) => (
+            <div className="card" key={card.key}>
+              <p className="muted text-xs">{card.label}</p>
+              <p className="text-2xl font-semibold">
+                {String(summary[card.key] ?? 0)}
+              </p>
+            </div>
+          ))}
+        </div>
+      )}
       {error && <ErrorState message={error} />}
       {notice && (
         <p role="status" className="success-box mb-4">
@@ -153,7 +179,7 @@ export function EntityManager({
           <input
             className="input max-w-xs"
             aria-label={"Search " + title}
-            placeholder="Search…"
+            placeholder={searchPlaceholder}
             value={q}
             onChange={(e) => setQ(e.target.value)}
           />

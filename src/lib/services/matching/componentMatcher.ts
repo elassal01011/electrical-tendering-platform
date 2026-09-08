@@ -8,6 +8,8 @@ import type { ParsedSpec } from "./boqParser";
 export type CandidateComponent = {
   id: string;
   manufacturer: string;
+  partNumber?: string;
+  tags?: string[];
   category: string;
   currentA: number | null;
   poles: number | null;
@@ -24,6 +26,7 @@ export type MatchResult = {
   safetyFlags: string[];
   safe: boolean;
   status: "AUTO_MATCHED" | "ENGINEER_REVIEW" | "NO_MATCH";
+  confidence: "HIGH" | "MEDIUM" | "LOW";
 };
 
 /**
@@ -54,6 +57,19 @@ export function scoreComponent(
   let score = 0;
   const reasons: string[] = [];
   const safetyFlags: string[] = [];
+  const normalize = (value: unknown) =>
+    String(value ?? "").toLowerCase().replace(/\s+/g, " ").trim();
+  const requiredPart = normalize(spec.partNumber || spec.model);
+  const candidateReferences = [
+    candidate.partNumber,
+    ...(candidate.tags ?? [])
+      .filter((tag) => /^(CODE|MODEL):/i.test(tag))
+      .map((tag) => tag.slice(tag.indexOf(":") + 1)),
+  ].map(normalize);
+  if (requiredPart && candidateReferences.includes(requiredPart)) {
+    score += 35;
+    reasons.push(`Part number exact match (${candidate.partNumber})`);
+  }
   for (const key of [
     "currentA",
     "voltageV",
@@ -84,6 +100,7 @@ export function scoreComponent(
       safetyFlags: ["CATEGORY_MISMATCH"],
       safe: false,
       status: "NO_MATCH",
+      confidence: "LOW",
     };
   }
 
@@ -166,20 +183,29 @@ export function scoreComponent(
   }
 
   const normalized = Math.round((score / maxScore) * 100 * 100) / 100;
+  const descriptionTokens = new Set(
+    normalize(spec.raw).split(/[^a-z0-9]+/).filter((token) => token.length > 2),
+  );
+  const candidateTokens = new Set(
+    normalize(candidate.description).split(/[^a-z0-9]+/).filter((token) => token.length > 2),
+  );
+  const overlap = [...descriptionTokens].filter((token) => candidateTokens.has(token)).length;
+  const finalScore = Math.min(100, Math.round((normalized + Math.min(10, overlap * 2)) * 100) / 100);
   const safe = safetyFlags.length === 0;
   const status =
-    !safe || normalized < 60
+    !safe || finalScore < 60
       ? "NO_MATCH"
-      : normalized < 80
+      : finalScore < 85
         ? "ENGINEER_REVIEW"
         : "AUTO_MATCHED";
   return {
     componentId: candidate.id,
-    score: normalized,
+    score: finalScore,
     reasons,
     safetyFlags,
     safe,
     status,
+    confidence: finalScore >= 85 ? "HIGH" : finalScore >= 60 ? "MEDIUM" : "LOW",
   };
 }
 
@@ -199,7 +225,7 @@ export function rankCandidates(
     .sort((a, b) => b.score - a.score);
 }
 
-const AUTO_SELECT_THRESHOLD = 70;
+const AUTO_SELECT_THRESHOLD = 85;
 
 /**
  * Returns the best match ONLY if it clears a minimum confidence threshold

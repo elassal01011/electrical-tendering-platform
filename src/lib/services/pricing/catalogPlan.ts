@@ -10,10 +10,12 @@ export async function planCatalog(
   values: CatalogValues[],
   mode: "update" | "skip" | "revision",
 ) {
-  const [suppliers, components] = await Promise.all([
-    db.party.findMany({ where: { type: "SUPPLIER", deletedAt: null } }),
-    db.component.findMany({ where: { active: true } }),
-  ]);
+  // Keep pool demand bounded on serverless instances configured with one
+  // connection. These are bulk preloads for the whole request batch.
+  const suppliers = await db.party.findMany({
+    where: { type: "SUPPLIER", deletedAt: null },
+  });
+  const components = await db.component.findMany({ where: { active: true } });
   const supplierMap = new Map(
     suppliers.map((s) => [norm(s.companyName), s.id]),
   );

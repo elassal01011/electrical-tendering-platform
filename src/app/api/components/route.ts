@@ -26,17 +26,36 @@ export async function GET(req: NextRequest) {
     ];
   }
 
-  const [components, total] = await Promise.all([
-    prisma.component.findMany({
-      where,
-      skip: (page - 1) * pageSize,
-      take: pageSize,
-      orderBy: { manufacturer: "asc" },
-    }),
-    prisma.component.count({ where }),
-  ]);
+  const components = await prisma.component.findMany({
+    where,
+    skip: (page - 1) * pageSize,
+    take: pageSize,
+    orderBy: { manufacturer: "asc" },
+  });
+  const total = await prisma.component.count({ where });
+  const active = await prisma.component.findMany({
+    where: { active: true },
+    select: { manufacturer: true, category: true, tags: true },
+  });
+  const needsReview = active.filter((component) =>
+    component.tags.includes("NEEDS_REVIEW"),
+  ).length;
 
-  return NextResponse.json({ components, total, page, pageSize });
+  return NextResponse.json({
+    components,
+    total,
+    page,
+    pageSize,
+    summary: {
+      totalComponents: active.length,
+      manufacturers: new Set(
+        active.map((component) => component.manufacturer.toLowerCase()),
+      ).size,
+      categories: new Set(active.map((component) => component.category)).size,
+      verifiedComponents: active.length - needsReview,
+      needsReview,
+    },
+  });
 }
 
 const createComponentSchema = z.object({

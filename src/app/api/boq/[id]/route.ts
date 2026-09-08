@@ -44,8 +44,7 @@ export async function GET(
         ? { rawDescription: { contains: q, mode: "insensitive" as const } }
         : {}),
     };
-    const [boq, total, summaryItems] = await Promise.all([
-      prisma.bOQ.findUnique({
+    const boq = await prisma.bOQ.findUnique({
         where: { id: params.id },
         include: {
           items: {
@@ -57,18 +56,19 @@ export async function GET(
           },
           project: true,
         },
-      }),
-      prisma.bOQItem.count({ where }),
-      prisma.bOQItem.findMany({
+      });
+    const total = await prisma.bOQItem.count({ where });
+    const summaryItems = await prisma.bOQItem.findMany({
         where: { boqId: params.id },
         select: {
           quantity: true,
           appliedUnitPrice: true,
           appliedCurrency: true,
           priceSource: true,
+          status: true,
+          matchedComponentId: true,
         },
-      }),
-    ]);
+      });
     if (!boq)
       return NextResponse.json({ error: "BOQ not found." }, { status: 404 });
     return NextResponse.json({

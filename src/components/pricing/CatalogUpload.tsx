@@ -2,6 +2,10 @@
 import { useEffect, useRef, useState } from "react";
 import { CATALOG_FIELDS } from "@/lib/services/pricing/catalogFields";
 import { requestJson } from "@/lib/client/request";
+import {
+  createImportProcessingLock,
+  requestCatalogBatch,
+} from "@/lib/client/catalogBatchClient";
 export function CatalogUpload({
   close,
   completed,
@@ -24,6 +28,7 @@ export function CatalogUpload({
     [showSkipped, setShowSkipped] = useState(false);
   const [session, setSession] = useState<any>(null);
   const pauseRequested = useRef(false);
+  const processingLock = useRef(createImportProcessingLock());
   const sessionKey = "price-catalog-import-session";
   useEffect(() => {
     const id = window.localStorage.getItem(sessionKey);
@@ -125,30 +130,22 @@ export function CatalogUpload({
     });
   }
   async function processBatches(initial: any) {
-    let current = initial;
-    while (
-      current.status !== "COMPLETED" &&
-      current.status !== "CANCELLED" &&
-      current.currentOffset < current.totalRows &&
-      !pauseRequested.current
-    ) {
-      const response = await fetch(`/api/pricing/import/${current.id}/batch`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          offset: current.currentOffset,
-          limit: current.batchSize,
-        }),
-      });
-      const next = await response.json();
-      setSession(next);
-      current = next;
-      if (!response.ok) throw new Error(next.error || "Import batch failed.");
-    }
-    if (current.status === "COMPLETED") {
-      showCompleted(current);
-      completed(current.reviewRows);
-    }
+    await processingLock.current.run(async () => {
+      let current = initial;
+      while (
+        current.status !== "COMPLETED" &&
+        current.status !== "CANCELLED" &&
+        current.currentOffset < current.totalRows &&
+        !pauseRequested.current
+      ) {
+        current = await requestCatalogBatch(current);
+        setSession(current);
+      }
+      if (current.status === "COMPLETED") {
+        showCompleted(current);
+        completed(current.reviewRows);
+      }
+    });
   }
   function showCompleted(current: any) {
     setResult({

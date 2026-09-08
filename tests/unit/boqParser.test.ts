@@ -47,4 +47,19 @@ describe("parseBoqDescription", () => {
     const result = parseBoqDescription("Cable trunking 100x100mm galvanized");
     expect(result.category).toBeNull();
   });
+  it("normalizes ampere wording and a trailing AC coil voltage", () => {
+    const result = parseBoqDescription("Contactor 40 Ampere 3 Pole 230VAC coil ABB");
+    expect(result).toMatchObject({
+      category: "CONTACTOR",
+      manufacturer: "ABB",
+      currentA: 40,
+      poles: 3,
+      coilVoltageV: 230,
+    });
+  });
+  it("extracts an explicitly labelled catalog reference", () => {
+    expect(parseBoqDescription("ABB MCCB 250A Catalog No 1SDA067123R1").partNumber).toBe(
+      "1SDA067123R1",
+    );
+  });
 });

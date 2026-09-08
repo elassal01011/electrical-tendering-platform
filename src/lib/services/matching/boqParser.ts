@@ -15,6 +15,8 @@
 export type ParsedSpec = {
   category: ComponentCategoryGuess | null;
   manufacturer: string | null;
+  partNumber: string | null;
+  model: string | null;
   currentA: number | null;
   poles: number | null;
   breakingCapacityKA: number | null;
@@ -115,7 +117,7 @@ export function parseBoqDescription(rawInput: string): ParsedSpec {
   }
 
   // Current rating, e.g. "250A", "250 A", "250amp"
-  const currentMatch = lower.match(/(\d{1,5})\s*a(?:mp)?s?\b(?!\w)/i);
+  const currentMatch = lower.match(/(\d{1,5})\s*a(?:mp(?:ere)?)?s?\b(?!\w)/i);
   const currentA = currentMatch ? Number(currentMatch[1]) : null;
 
   // Poles, e.g. "4P", "3-pole", "3 pole"
@@ -155,10 +157,11 @@ export function parseBoqDescription(rawInput: string): ParsedSpec {
     Number(lower.match(/(30|100|300)\s*ma\b/i)?.[1] ?? "") || null;
   const coilVoltageV =
     Number(
-      lower.match(
-        /(?:coil|control)\s*(?:voltage)?\s*[:=-]?\s*(\d{2,4})\s*v/i,
-      )?.[1] ?? "",
+      lower.match(/(?:coil|control)\s*(?:voltage)?\s*[:=-]?\s*(\d{2,4})\s*v/i)?.[1] ??
+        lower.match(/(\d{2,4})\s*v(?:ac|dc)?\s*(?:coil|control)/i)?.[1] ?? "",
     ) || null;
+  const partNumber =
+    raw.match(/(?:part\s*(?:number|no)|p\/n|catalog(?:ue)?\s*(?:number|no)|ordering\s*code|reference)\s*[:#-]?\s*([A-Z0-9][A-Z0-9._/-]{2,})/i)?.[1] ?? null;
   const frequencyHz = Number(lower.match(/(50|60)\s*hz\b/i)?.[1] ?? "") || null;
   const motorPowerKW =
     Number(lower.match(/(\d+(?:\.\d+)?)\s*kw\b/i)?.[1] ?? "") || null;
@@ -190,6 +193,8 @@ export function parseBoqDescription(rawInput: string): ParsedSpec {
   return {
     category,
     manufacturer,
+    partNumber,
+    model: partNumber,
     currentA,
     poles,
     breakingCapacityKA,

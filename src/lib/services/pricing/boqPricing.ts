@@ -4,6 +4,8 @@ export function summarizeBoqPrices(
     appliedUnitPrice: unknown;
     appliedCurrency: string | null;
     priceSource: string | null;
+    status?: string;
+    matchedComponentId?: string | null;
   }[],
 ) {
   const totalsByCurrency: Record<string, number> = {};
@@ -22,6 +24,13 @@ export function summarizeBoqPrices(
     manual: items.filter((i) => i.priceSource === "MANUAL").length,
     supplierPriced: items.filter((i) => i.priceSource === "SUPPLIER_PRICE")
       .length,
+    matched: items.filter((i) => i.matchedComponentId).length,
+    unmatched: items.filter((i) => !i.matchedComponentId).length,
+    verified: items.filter((i) => ["MATCHED", "MANUAL_OVERRIDE"].includes(i.status ?? "")).length,
+    autoPrices: items.filter((i) =>
+      ["SUPPLIER_PRICE", "COMPONENT_LIST_PRICE", "AUTO_SELECTED"].includes(i.priceSource ?? ""),
+    ).length,
+    needsReview: items.filter((i) => ["UNMATCHED", "SUGGESTED"].includes(i.status ?? "")).length,
     totalsByCurrency,
   };
 }

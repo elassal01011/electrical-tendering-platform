@@ -67,12 +67,36 @@ export async function PATCH(
   try {
     const g = await requirePermission("boq.review");
     if (g.error) return g.error;
+    const body = await req.json();
+    if (body.action === "clear") {
+      const replaceManualPrice = body.replaceManualPrice === true;
+      const result = await prisma.$transaction(async (tx) => {
+        const item = await tx.bOQItem.findUniqueOrThrow({ where: { id: params.id } });
+        if (item.priceSource === "MANUAL" && !replaceManualPrice)
+          throw new ExcelError("Confirm clearing the locked manual price before changing the component.", 409);
+        const updated = await tx.bOQItem.update({
+          where: { id: item.id },
+          data: {
+            status: "UNMATCHED", matchedComponentId: null, matchScore: null, matchReason: null,
+            appliedSupplierId: null, appliedSupplierPriceId: null, appliedUnitPrice: null,
+            appliedCurrency: null, priceSource: null, priceAppliedAt: null,
+          },
+        });
+        await tx.auditLog.create({ data: {
+          userId: g.userId, action: "BOQ_COMPONENT_CLEARED", entity: "BOQItem", entityId: item.id,
+          oldValue: { componentId: item.matchedComponentId }, newValue: { componentId: null },
+        } });
+        return updated;
+      });
+      return NextResponse.json({ item: result });
+    }
     const input = z
       .object({
         componentId: z.string().min(1),
         notes: z.string().trim().min(1).max(2000),
+        replaceManualPrice: z.boolean().default(false),
       })
-      .parse(await req.json());
+      .parse(body);
     const result = await prisma.$transaction(async (tx) => {
       const item = await tx.bOQItem.findUniqueOrThrow({
           where: { id: params.id },
@@ -80,6 +104,15 @@ export async function PATCH(
         component = await tx.component.findFirstOrThrow({
           where: { id: input.componentId, active: true },
         });
+      if (
+        item.priceSource === "MANUAL" &&
+        item.matchedComponentId !== component.id &&
+        !input.replaceManualPrice
+      )
+        throw new ExcelError(
+          "Confirm clearing the locked manual price before changing the component.",
+          409,
+        );
       const score = scoreComponent(
         (item.parsedSpec as unknown as ParsedSpec) || {},
         {

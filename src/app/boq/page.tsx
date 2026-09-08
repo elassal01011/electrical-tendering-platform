@@ -87,14 +87,14 @@ export default function BOQ() {
     const t = setTimeout(() => load().catch((e) => setError(e.message)), 200);
     return () => clearTimeout(t);
   }, [boqId, page, q, filter]);
-  async function action(kind: string) {
+  async function action(kind: string, body: object = {}) {
     if (!boqId) return;
     setBusy(true);
     setError("");
     try {
       const d = await requestJson("/api/boq/" + boqId + "/" + kind, {
         method: "POST",
-        body: "{}",
+        body: JSON.stringify(body),
       });
       setNotice(
         kind === "match"
@@ -238,6 +238,25 @@ export default function BOQ() {
       await load();
     } catch (e) {
       setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function clearMatch(item: any) {
+    const replaceManualPrice =
+      item.priceSource === "MANUAL"
+        ? window.confirm("Clearing this component will also clear its locked manual price. Continue?")
+        : false;
+    if (item.priceSource === "MANUAL" && !replaceManualPrice) return;
+    setBusy(true);
+    try {
+      await requestJson("/api/boq/items/" + item.id, {
+        method: "PATCH",
+        body: JSON.stringify({ action: "clear", replaceManualPrice }),
+      });
+      await load();
+    } catch (reason) {
+      setError((reason as Error).message);
     } finally {
       setBusy(false);
     }
@@ -408,7 +427,16 @@ export default function BOQ() {
             disabled={!boqId || busy}
             onClick={() => action("match")}
           >
-            Auto match next 100 rows
+            Auto Match
+          </button>
+        )}
+        {can("boq.review") && (
+          <button
+            className="btn-secondary"
+            disabled={!boqId || busy}
+            onClick={() => action("match", { acceptHigh: true })}
+          >
+            Accept All High Confidence
           </button>
         )}
         {can("pricing.edit") && (
@@ -417,7 +445,7 @@ export default function BOQ() {
             disabled={!boqId || busy}
             onClick={() => action("apply-prices")}
           >
-            Price next 100 reviewed rows
+            Auto Price All
           </button>
         )}
         {(can("pricing.edit") || can("boq.edit")) && (
@@ -523,13 +551,17 @@ export default function BOQ() {
             <span className="badge">{total} ROWS</span>
           </div>
           {summary && (
-            <div className="grid grid-cols-2 gap-3 mb-5 lg:grid-cols-6">
+            <div className="grid grid-cols-2 gap-3 mb-5 lg:grid-cols-5">
               {Object.entries({
                 Items: summary.items,
+                Matched: summary.matched,
+                Unmatched: summary.unmatched,
+                Verified: summary.verified,
                 Priced: summary.priced,
                 Unpriced: summary.unpriced,
-                Manual: summary.manual,
-                "Supplier priced": summary.supplierPriced,
+                "Manual Prices": summary.manual,
+                "Auto Prices": summary.autoPrices,
+                "Needs Review": summary.needsReview,
               }).map(([label, value]) => (
                 <div className="metric" key={label}>
                   <span>{label}</span>
@@ -642,6 +674,8 @@ export default function BOQ() {
               "Manufacturer",
               "Part Number",
               "Selected Component",
+              "Confidence",
+              "Match Status",
               "Unit Cost",
               "Price Source",
               "Currency",
@@ -669,6 +703,11 @@ export default function BOQ() {
                     "Unselected"
                   )}
                 </td>
+                <td>
+                  {i.matchScore === null ? "—" : `${Number(i.matchScore).toFixed(0)}%`}
+                  {i.matchReason && <details><summary>Reasons</summary><p className="text-xs">{i.matchReason}</p></details>}
+                </td>
+                <td>{i.status}</td>
                 <td>
                   {i.appliedUnitPrice === null
                     ? "Not priced"
@@ -741,12 +780,16 @@ export default function BOQ() {
                       </>
                     )}
                     {can("boq.review") && (
-                      <button
-                        className="btn-secondary"
-                        onClick={() => setReview(i.id)}
-                      >
-                        Review
-                      </button>
+                      <>
+                        <button className="btn-secondary" onClick={() => setReview(i.id)}>
+                          {i.status === "SUGGESTED" ? "Accept / Change" : "Change"}
+                        </button>
+                        {i.matchedComponentId && (
+                          <button className="btn-secondary" disabled={busy} onClick={() => void clearMatch(i)}>
+                            Clear
+                          </button>
+                        )}
+                      </>
                     )}
                     {can("boq.edit") && (
                       <>
