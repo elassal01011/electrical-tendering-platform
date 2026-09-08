@@ -56,6 +56,22 @@ const fail = (error: string, status: number, details: unknown[] = []) =>
 const fileLike = (v: FormDataEntryValue | null): v is File =>
   !!v && typeof v === "object" && "arrayBuffer" in v && "name" in v;
 
+// Only application-authored labels/messages belong here, never workbook values or exceptions.
+function patchValidation(issues: { field: string; message: string }[]) {
+  console.warn("pricing.validation", {
+    method: "PATCH",
+    issues: issues.map((issue) => ({
+      path: issue.field,
+      message: issue.message,
+      code: "custom",
+    })),
+  });
+  return NextResponse.json(
+    { success: false, error: "VALIDATION_ERROR", issues, created: 0, updated: 0, rejected: issues.length },
+    { status: 422 },
+  );
+}
+
 export async function GET(req: NextRequest) {
   const guard = await requirePermission("pricing.view");
   if (guard.error) return guard.error;
@@ -239,16 +255,12 @@ export async function PATCH(req: NextRequest) {
       );
     const workbook = await readWorkbook(file);
     const sheet = workbook.worksheets[0];
-    if (!sheet) return fail("The XLSX file contains no worksheet.", 422);
+    if (!sheet) return patchValidation([{ field: "file", message: "The XLSX file contains no worksheet." }]);
     const { columnMap, missing, ambiguous } = parsePricingHeaders(sheet);
     if (missing.length)
-      return fail("Missing required pricing columns", 422, missing);
+      return patchValidation(missing.map((field) => ({ field, message: `Missing required pricing column: ${field}.` })));
     if (ambiguous.length)
-      return fail(
-        "Ambiguous pricing columns",
-        422,
-        ambiguous.map((name) => `Only one '${name}' column is allowed.`),
-      );
+      return patchValidation(ambiguous.map((field) => ({ field, message: `Only one '${field}' column is allowed.` })));
     const get = (row: ExcelJS.Row, name: Parameters<typeof valueAt>[2]) =>
       valueAt(row, columnMap, name);
     const raw: any[] = [],
@@ -336,7 +348,7 @@ export async function PATCH(req: NextRequest) {
         });
     }
     if (!raw.length && !errors.length)
-      return fail("The XLSX file contains no pricing rows.", 422);
+      return patchValidation([{ field: "file", message: "The XLSX file contains no pricing rows." }]);
     progress.stage = "preload-identities";
     const [suppliers, components] = await Promise.all([
       prisma.party.findMany({ where: { type: "SUPPLIER", deletedAt: null } }),
@@ -420,17 +432,10 @@ export async function PATCH(req: NextRequest) {
       }
     }
     if (errors.length)
-      return NextResponse.json(
-        {
-          success: false,
-          error: "Import validation failed. No prices were changed.",
-          created: 0,
-          updated: 0,
-          rejected: errors.length,
-          errors,
-        },
-        { status: 422 },
-      );
+      return patchValidation(errors.map((issue) => ({
+        field: `rows.${issue.row}.${issue.field ?? "identity"}`,
+        message: issue.message,
+      })));
     const mode =
       form.get("mode") === "replace"
         ? "replace"
@@ -484,6 +489,8 @@ export async function PATCH(req: NextRequest) {
       errors: [],
     });
   } catch (e) {
+    if (e instanceof ExcelError && e.status === 422)
+      return patchValidation([{ field: "file", message: "The workbook could not be validated. Check that it contains a readable worksheet." }]);
     if (e instanceof ExcelError) return apiError(e, "pricing.validation");
     logPricingImportError(e, progress.stage);
     return NextResponse.json(

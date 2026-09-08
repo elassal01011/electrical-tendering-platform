@@ -106,11 +106,39 @@ describe("pricing import database stage", () => {
     },
   );
   it("rejects malformed rows before any database write", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const result = await PATCH(await request(300, true));
     expect(result.status).toBe(422);
-    expect(await result.json()).toMatchObject({ rejected: 1, created: 0 });
+    expect(await result.json()).toMatchObject({
+      error: "VALIDATION_ERROR", rejected: 1, created: 0,
+      issues: [{ field: "rows.7.price", message: "Price must be a non-negative number." }],
+    });
+    expect(warn).toHaveBeenCalledWith("pricing.validation", {
+      method: "PATCH", issues: [{ path: "rows.7.price", message: "Price must be a non-negative number.", code: "custom" }],
+    });
     expect(state.suppliers).toHaveLength(0);
     expect(state.batches).toHaveLength(0);
+    warn.mockRestore();
+  });
+  it.each([
+    { headers: ["Vendor", "SKU"], field: "Unit Price" },
+    { headers: ["Vendor", "Supplier", "SKU", "Cost"], field: "Supplier" },
+    { headers: ["Vendor", "SKU", "Cost"], field: "file" },
+  ])("returns safe issues for header or empty-file validation: $field", async ({ headers, field }) => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const book = new ExcelJS.Workbook();
+    book.addWorksheet("secret-token").addRow([...headers, "postgres://user:password@host/db", "a".repeat(64)]);
+    const form = new FormData();
+    form.append("file", new Blob([new Uint8Array(await book.xlsx.writeBuffer())]), "secret-token.xlsx");
+    const response = await PATCH(new Request("http://localhost/api/pricing", { method: "PATCH", body: form }) as any);
+    expect(response.status).toBe(422);
+    const body = await response.json();
+    expect(body).toMatchObject({ error: "VALIDATION_ERROR", issues: [expect.objectContaining({ field, message: expect.any(String) })] });
+    const output = JSON.stringify([body, warn.mock.calls]);
+    for (const secret of ["secret-token", "postgres://", "password", "a".repeat(64), "stack"])
+      expect(output).not.toContain(secret);
+    expect(state.batches).toHaveLength(0);
+    warn.mockRestore();
   });
   it("reports committed progress and safely retries a failed batch", async () => {
     const log = vi.spyOn(console, "error").mockImplementation(() => {});
