@@ -430,11 +430,10 @@ export default function ExcelPage() {
                       </select>
                     </label>
                     <p className="notice">
-                      Imports here save the selected sheet as normalized JSON in
-                      temporary staging for later processing. Uploads expire
-                      after 30 minutes. Download JSON to keep a copy. Catalog,
-                      pricing, BOQ, client, and supplier choices label the
-                      staged data.
+                      Imports here prepare the selected sheet for the next
+                      workflow step. No business records change during this
+                      review. Download JSON remains available as an advanced
+                      export option.
                     </p>
                     <p>
                       To create business records, use the existing{" "}

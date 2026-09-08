@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requirePermission, writeAuditLog } from "@/lib/auth/apiGuard";
+import { requirePermission } from "@/lib/auth/apiGuard";
 import { prisma } from "@/lib/db/prisma";
 import { workbookRequest } from "@/lib/services/excel/uploadStore";
 import { extractWorkbook } from "@/lib/services/excel/extractWorkbook";
@@ -8,28 +8,20 @@ import {
   catalogConfig,
   validateCatalog,
 } from "@/lib/services/pricing/catalogImport";
-import { planCatalog } from "@/lib/services/pricing/catalogPlan";
-import {
-  writePricingImport,
-  type PricingProgress,
-} from "@/lib/services/pricing/writePricingImport";
+import { stageCatalogSession } from "@/lib/services/pricing/catalogSession";
 import { apiError } from "@/lib/apiError";
 import { ExcelError } from "@/lib/services/excel/uploadPolicy";
-import { logPricingImportError } from "@/lib/services/pricing/pricingImportDiagnostics";
+import type { Prisma } from "@prisma/client";
 export const runtime = "nodejs";
 export const maxDuration = 60;
 export async function POST(req: NextRequest) {
   const guard = await requirePermission("pricing.edit");
   if (guard.error) return guard.error;
-  const progress: PricingProgress = {
-    stage: "analyze",
-    imported: 0,
-    created: 0,
-    updated: 0,
-  };
-  let planned = 0;
   try {
-    const { file, config } = await workbookRequest(req, guard.userId!);
+    const { file, config, uploadId } = await workbookRequest(
+      req,
+      guard.userId!,
+    );
     const input = catalogConfig.parse(config);
     const workbook = await extractWorkbook(file);
     const sheet = input.sheetName
@@ -56,42 +48,46 @@ export async function POST(req: NextRequest) {
     const skippedRows = classified
       .filter((r) => r.classification === "NO_PRICE")
       .map(({ row, message }) => ({ row, message }));
-    const plan = await planCatalog(
-      prisma,
-      valid.map((r) => r.values),
+    if (!uploadId)
+      throw new ExcelError(
+        "Upload the workbook from Price Catalog before continuing.",
+        422,
+      );
+    const session = stageCatalogSession(
+      file.name,
+      sheet.name,
+      input.headerRow ?? sheet.detectedHeaderRow,
+      input.mapping,
       input.mode,
+      guard.userId!,
+      classified,
     );
-    planned = plan.rows.length;
-    const summary = {
-      valid: planned,
-      skippedNoPrice: skippedRows.length,
-      needsReview: review.length + plan.duplicateRows,
-      skippedExisting: plan.skippedExisting,
-      duplicateRows: plan.duplicateRows,
-      review,
-      skippedRows,
-    };
-    if (input.action === "validate")
-      return NextResponse.json({ preview: true, ...summary });
-    await writePricingImport(prisma, plan.rows, "append", progress);
-    await writeAuditLog({
-      userId: guard.userId,
-      action: "PRICE_CATALOG_IMPORT",
-      entity: "SupplierPrice",
-      entityId: "bulk",
-      newValue: {
-        imported: progress.imported,
-        skipped: skippedRows.length + plan.skippedExisting,
-        needsReview: summary.needsReview,
+    await prisma.excelUpload.updateMany({
+      where: {
+        id: uploadId,
+        userId: guard.userId!,
+        expiresAt: { gt: new Date() },
+      },
+      data: {
+        extractedData: session as unknown as Prisma.InputJsonValue,
+        // A validated large import can be resumed for one day.
+        expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
       },
     });
-    return NextResponse.json({
-      ...summary,
-      imported: progress.imported,
-      created: progress.created,
-      updated: progress.updated,
-      failed: 0,
-    });
+    const summary = {
+      valid: valid.length,
+      skippedNoPrice: skippedRows.length,
+      needsReview: review.length,
+      skippedExisting: 0,
+      duplicateRows: 0,
+      review,
+      skippedRows,
+      sessionId: uploadId,
+      status: "READY",
+      message:
+        "Excel data is ready for import. No Price Catalog records have been changed yet.",
+    };
+    return NextResponse.json({ preview: true, ...summary });
   } catch (error) {
     if (
       error instanceof Error &&
@@ -104,18 +100,6 @@ export async function POST(req: NextRequest) {
         },
         { status: 422 },
       );
-    if (progress.stage.startsWith("write") || progress.imported) {
-      logPricingImportError(error, progress.stage);
-      return NextResponse.json(
-        {
-          error:
-            "Import interrupted. Completed batches are saved; retry with the same settings.",
-          imported: progress.imported,
-          failed: planned - progress.imported,
-        },
-        { status: 503 },
-      );
-    }
     return apiError(error, "pricing.catalog");
   }
 }

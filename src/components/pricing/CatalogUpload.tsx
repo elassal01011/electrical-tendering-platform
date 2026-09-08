@@ -1,5 +1,5 @@
 "use client";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { CATALOG_FIELDS } from "@/lib/services/pricing/catalogFields";
 import { requestJson } from "@/lib/client/request";
 export function CatalogUpload({
@@ -22,6 +22,23 @@ export function CatalogUpload({
     [date, setDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [result, setResult] = useState<any>(null),
     [showSkipped, setShowSkipped] = useState(false);
+  const [session, setSession] = useState<any>(null);
+  const pauseRequested = useRef(false);
+  const sessionKey = "price-catalog-import-session";
+  useEffect(() => {
+    const id = window.localStorage.getItem(sessionKey);
+    if (!id) return;
+    requestJson(`/api/pricing/import/${id}`)
+      .then((value) => {
+        setSession(value);
+        setUploadId(id);
+        if (value.status === "COMPLETED") {
+          showCompleted(value);
+          completed(value.reviewRows);
+        }
+      })
+      .catch(() => window.localStorage.removeItem(sessionKey));
+  }, []);
   async function run(work: () => Promise<void>) {
     setBusy(true);
     setError("");
@@ -107,7 +124,112 @@ export function CatalogUpload({
       if (action === "import") completed(data.needsReview);
     });
   }
+  async function processBatches(initial: any) {
+    let current = initial;
+    while (
+      current.status !== "COMPLETED" &&
+      current.status !== "CANCELLED" &&
+      current.currentOffset < current.totalRows &&
+      !pauseRequested.current
+    ) {
+      const response = await fetch(`/api/pricing/import/${current.id}/batch`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          offset: current.currentOffset,
+          limit: current.batchSize,
+        }),
+      });
+      const next = await response.json();
+      setSession(next);
+      current = next;
+      if (!response.ok) throw new Error(next.error || "Import batch failed.");
+    }
+    if (current.status === "COMPLETED") {
+      showCompleted(current);
+      completed(current.reviewRows);
+    }
+  }
+  function showCompleted(current: any) {
+    setResult({
+      preview: false,
+      valid: current.importedRows,
+      imported: current.importedRows,
+      updated: current.updatedRows,
+      skippedNoPrice: current.noPriceRows,
+      skippedExisting: current.skippedRows - current.noPriceRows,
+      needsReview: current.reviewRows,
+      failed: current.failedRows,
+      review: current.reviewReport,
+      skippedRows: current.skippedReport,
+      duplicateRows: 0,
+    });
+  }
+  async function startImport() {
+    await run(async () => {
+      pauseRequested.current = false;
+      const started = await requestJson("/api/pricing/import/start", {
+        method: "POST",
+        body: JSON.stringify({ uploadId: result.sessionId }),
+      });
+      window.localStorage.setItem(sessionKey, started.id);
+      setSession(started);
+      await processBatches(started);
+    });
+  }
+  async function cancelImport() {
+    await run(async () => {
+      if (session?.id)
+        setSession(
+          await requestJson(`/api/pricing/import/${session.id}`, {
+            method: "DELETE",
+          }),
+        );
+      else if (uploadId)
+        await requestJson(`/api/pricing/upload?uploadId=${uploadId}`, {
+          method: "DELETE",
+        });
+      window.localStorage.removeItem(sessionKey);
+      close();
+    });
+  }
+  function downloadReport() {
+    const report = {
+      fileName: session.fileName,
+      status: session.status,
+      totalRows: session.totalRows,
+      imported: session.importedRows,
+      updated: session.updatedRows,
+      skipped: session.skippedRows,
+      needsReview: session.reviewRows,
+      failed: session.failedRows,
+      skippedRows: session.skippedReport,
+      reviewRows: session.reviewReport,
+    };
+    const url = URL.createObjectURL(
+      new Blob([JSON.stringify(report, null, 2)], {
+        type: "application/json",
+      }),
+    );
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "price-catalog-import-report.json";
+    link.click();
+    URL.revokeObjectURL(url);
+  }
   const reset = () => setResult(null);
+  const step =
+    session?.status === "COMPLETED"
+      ? 6
+      : session
+        ? 5
+        : result?.preview
+          ? 4
+          : preview
+            ? 3
+            : uploadId
+              ? 1
+              : 0;
   return (
     <section className="card space-y-4" aria-label="Upload Price Catalog">
       <div className="flex justify-between">
@@ -115,19 +237,25 @@ export function CatalogUpload({
         <button
           className="btn-secondary"
           disabled={busy}
-          onClick={() =>
-            void run(async () => {
-              if (uploadId)
-                await requestJson(`/api/pricing/upload?uploadId=${uploadId}`, {
-                  method: "DELETE",
-                });
-              close();
-            })
-          }
+          onClick={() => void cancelImport()}
         >
           Close
         </button>
       </div>
+      <ol className="grid gap-2 text-sm md:grid-cols-6">
+        {[
+          "File uploaded",
+          "Sheet extracted",
+          "Columns mapped",
+          "Ready to import",
+          "Importing",
+          "Complete",
+        ].map((label, index) => (
+          <li className={step >= index + 1 ? "badge" : "muted"} key={label}>
+            Step {index + 1}: {label}
+          </li>
+        ))}
+      </ol>
       <label className="block">
         Excel workbook
         <input
@@ -147,6 +275,63 @@ export function CatalogUpload({
           {error}
         </p>
       )}
+      {session &&
+        session.status !== "COMPLETED" &&
+        session.status !== "CANCELLED" && (
+          <div className="space-y-2">
+            <h3>Importing {session.fileName}</h3>
+            <p>
+              Processed: {session.processedRows.toLocaleString()} /{" "}
+              {session.totalRows.toLocaleString()} · Imported:{" "}
+              {session.importedRows.toLocaleString()} · Skipped:{" "}
+              {session.skippedRows.toLocaleString()} · Needs Review:{" "}
+              {session.reviewRows.toLocaleString()} · Failed:{" "}
+              {session.failedRows.toLocaleString()}
+            </p>
+            <div
+              className="h-3 overflow-hidden rounded bg-slate-800"
+              role="progressbar"
+              aria-valuenow={session.processedRows}
+              aria-valuemax={session.totalRows}
+            >
+              <div
+                className="h-full bg-blue-500"
+                style={{
+                  width: `${session.totalRows ? Math.round((session.processedRows / session.totalRows) * 100) : 0}%`,
+                }}
+              />
+            </div>
+            <div className="flex gap-2">
+              {busy ? (
+                <button
+                  className="btn-secondary"
+                  onClick={() => {
+                    pauseRequested.current = true;
+                  }}
+                >
+                  Pause after this batch
+                </button>
+              ) : (
+                <button
+                  className="btn-primary"
+                  onClick={() => {
+                    pauseRequested.current = false;
+                    void run(() => processBatches(session));
+                  }}
+                >
+                  Resume Import
+                </button>
+              )}
+              <button
+                className="btn-secondary"
+                disabled={busy}
+                onClick={() => void cancelImport()}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
       {preview && (
         <>
           <div className="grid md:grid-cols-3 gap-3">
@@ -335,22 +520,29 @@ export function CatalogUpload({
           >
             Validate
           </button>
-          {(result?.preview || result?.interrupted) && (
-            <button
-              className="btn-primary"
-              disabled={busy || !result.valid}
-              onClick={() => {
-                if (
-                  mode !== "update" ||
-                  confirm(
-                    "Update existing prices? This changes their current values.",
-                  )
-                )
-                  void action("import");
-              }}
-            >
-              Import {result.valid} Valid Prices
-            </button>
+          {result?.preview && (
+            <div className="space-y-2">
+              <p className="notice">
+                Excel data is ready for import. No Price Catalog records have
+                been changed yet.
+              </p>
+              <button
+                className="btn-primary"
+                disabled={busy || !result.valid}
+                onClick={() => void startImport()}
+              >
+                Continue to Import
+              </button>
+              <button className="btn-secondary" onClick={() => setResult(null)}>
+                Review Mapping
+              </button>
+              <button
+                className="btn-secondary"
+                onClick={() => void cancelImport()}
+              >
+                Cancel
+              </button>
+            </div>
           )}
         </>
       )}
@@ -381,9 +573,20 @@ export function CatalogUpload({
             </p>
           ))}
           {!result.preview && (
-            <button className="btn-primary" onClick={close}>
-              View Imported Prices
-            </button>
+            <>
+              <button
+                className="btn-primary"
+                onClick={() => {
+                  window.localStorage.removeItem(sessionKey);
+                  close();
+                }}
+              >
+                View Price Catalog
+              </button>
+              <button className="btn-secondary" onClick={downloadReport}>
+                Download Import Report
+              </button>
+            </>
           )}
           <button
             className="btn-secondary"

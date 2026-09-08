@@ -9,6 +9,9 @@ const state = vi.hoisted(() => ({
   batches: [] as number[],
   deny: false,
   applied: null as any,
+  upload: null as any,
+  failBatch: 0,
+  batchRequests: 0,
 }));
 vi.mock("@/lib/auth/apiGuard", () => ({
   requirePermission: async () =>
@@ -17,6 +20,40 @@ vi.mock("@/lib/auth/apiGuard", () => ({
       : { userId: "u" },
   writeAuditLog: async (value: any) => {
     state.audits.push(value);
+  },
+}));
+vi.mock("@/lib/services/pricing/catalogSessionStore", () => ({
+  readCatalogSession: async () =>
+    state.upload ? { ...state.upload.extractedData, rows: [] } : null,
+  readCatalogSessionRows: async (
+    _db: unknown,
+    _id: string,
+    _userId: string,
+    offset: number,
+    limit: number,
+  ) => state.upload.extractedData.rows.slice(offset, offset + limit),
+  mergeCatalogSession: async (
+    _db: unknown,
+    _id: string,
+    _userId: string,
+    patch: any,
+    condition?: { leaseToken?: string | null; currentOffset?: number },
+  ) => {
+    const current = state.upload?.extractedData;
+    if (!current) return 0;
+    if (
+      condition?.leaseToken !== undefined &&
+      current.leaseToken !== condition.leaseToken
+    )
+      return 0;
+    if (
+      condition?.currentOffset !== undefined &&
+      current.currentOffset !== condition.currentOffset
+    )
+      return 0;
+    if (patch.leaseToken) state.batchRequests++;
+    Object.assign(current, patch);
+    return 1;
   },
 }));
 vi.mock("@/lib/db/prisma", () => {
@@ -85,6 +122,32 @@ vi.mock("@/lib/db/prisma", () => {
           ],
         }),
       },
+      excelUpload: {
+        findFirst: async () => state.upload,
+        update: async ({ data }: any) => {
+          state.upload.extractedData = data.extractedData;
+          if (data.expiresAt) state.upload.expiresAt = data.expiresAt;
+          return state.upload;
+        },
+        updateMany: async ({ where, data }: any) => {
+          if (!state.upload) return { count: 0 };
+          const filters = where.AND ?? (where.extractedData ? [where] : []);
+          for (const filter of filters) {
+            const json = filter.extractedData;
+            if (!json?.path) continue;
+            const current = state.upload.extractedData?.[json.path[0]] ?? null;
+            const expected =
+              json.equals === null || typeof json.equals === "object"
+                ? null
+                : json.equals;
+            if (current !== expected) return { count: 0 };
+          }
+          if (data.extractedData?.leaseToken) state.batchRequests++;
+          state.upload.extractedData = data.extractedData;
+          if (data.expiresAt) state.upload.expiresAt = data.expiresAt;
+          return { count: 1 };
+        },
+      },
       $transaction: async (operations: any) => {
         if (!Array.isArray(operations))
           return operations({
@@ -98,12 +161,23 @@ vi.mock("@/lib/db/prisma", () => {
           });
         expect(operations.length).toBeLessThanOrEqual(100);
         state.batches.push(operations.length);
+        if (state.failBatch === state.batches.length)
+          throw Object.assign(new Error("Transaction expired"), {
+            code: "P2028",
+            meta: { error: "Transaction expired" },
+          });
         for (const operation of operations) operation();
       },
     },
   };
 });
 import { POST as importCatalog } from "../../src/app/api/pricing/catalog/import/route";
+import { POST as startImport } from "../../src/app/api/pricing/import/start/route";
+import { POST as importBatch } from "../../src/app/api/pricing/import/[sessionId]/batch/route";
+import {
+  GET as importStatus,
+  DELETE as cancelImport,
+} from "../../src/app/api/pricing/import/[sessionId]/route";
 import {
   POST as manual,
   PUT as edit,
@@ -150,6 +224,67 @@ async function workbookRequest(
     body: form,
   });
 }
+async function stagedRequest(count: number, config: any, mixed = false) {
+  const request = await workbookRequest(count, config, false, mixed);
+  const form = await request.formData();
+  const file = form.get("file") as File;
+  const bytes = Buffer.from(await file.arrayBuffer());
+  state.upload = {
+    id: "session-1",
+    userId: "u",
+    fileName: file.name,
+    mimeType: file.type,
+    size: bytes.length,
+    expiresAt: new Date(Date.now() + 60_000),
+    extractedData: null,
+    importedBoqId: null,
+    chunks: [{ index: 0, bytes }],
+  };
+  return new NextRequest("http://localhost/api/pricing/catalog/import", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      uploadId: state.upload.id,
+      config: {
+        ...config,
+        sheetName: "Catalog",
+        headerRow: 5,
+        revisionDate: config.revisionDate ?? "2026-01-01T00:00:00.000Z",
+      },
+    }),
+  });
+}
+const context = { params: Promise.resolve({ sessionId: "session-1" }) };
+async function runSession(count: number, config: any = {}, mixed = false) {
+  const staged = await importCatalog(
+    await stagedRequest(
+      count,
+      { action: "validate", mapping, ...config },
+      mixed,
+    ),
+  );
+  expect(staged.status).toBe(200);
+  let current = await (
+    await startImport(
+      new NextRequest("http://localhost/api/pricing/import/start", {
+        method: "POST",
+        body: JSON.stringify({ uploadId: "session-1" }),
+      }),
+    )
+  ).json();
+  while (current.status !== "COMPLETED") {
+    const response = await importBatch(
+      new NextRequest("http://localhost/api/pricing/import/session-1/batch", {
+        method: "POST",
+        body: JSON.stringify({ offset: current.currentOffset, limit: 100 }),
+      }),
+      context,
+    );
+    current = await response.json();
+    if (!response.ok) return { response, current };
+  }
+  return { current };
+}
 const mapping = { partNumber: 1, price: 2, description: 3 };
 beforeEach(() => {
   state.suppliers = [];
@@ -159,6 +294,9 @@ beforeEach(() => {
   state.audits = [];
   state.deny = false;
   state.applied = null;
+  state.upload = null;
+  state.failBatch = 0;
+  state.batchRequests = 0;
 });
 describe("price catalog", () => {
   it.each(["12,450", "12450", "₹12,450", "EGP 6717.12", "12,450.50"])(
@@ -175,15 +313,11 @@ describe("price catalog", () => {
     expect(normalizeCatalogPrice("not-a-price")).toEqual({
       classification: "INVALID_PRICE",
     }));
-  it("analyzes arbitrary headers without rejection, then imports corrected mappings", async () => {
+  it("analyzes arbitrary headers without rejection", async () => {
     const preview = await importCatalog(
       await workbookRequest(3, { action: "analyze" }, true),
     );
     expect(preview.status).toBe(200);
-    const imported = await importCatalog(
-      await workbookRequest(3, { action: "import", mapping }, true),
-    );
-    expect(await imported.json()).toMatchObject({ imported: 3 });
   });
   it("automatically recognizes price and identifier columns on row five", async () => {
     const response = await importCatalog(
@@ -195,66 +329,115 @@ describe("price catalog", () => {
     });
   });
   it("imports valid rows and reports no-price and invalid rows separately", async () => {
-    const response = await importCatalog(
-      await workbookRequest(7, { action: "import", mapping }, false, true),
-    );
-    expect(await response.json()).toMatchObject({
-      imported: 1,
-      skippedNoPrice: 5,
-      needsReview: 1,
-      failed: 0,
+    const { current } = await runSession(7, {}, true);
+    expect(current).toMatchObject({
+      importedRows: 1,
+      noPriceRows: 5,
+      reviewRows: 1,
+      failedRows: 0,
     });
     expect(state.prices[0].price).toBe(6717.12);
   });
-  it("imports 1000 rows in bounded batches and handles skip, update and revision", async () => {
-    expect(
-      (
-        await importCatalog(
-          await workbookRequest(1000, { action: "import", mapping }),
-        )
-      ).status,
-    ).toBe(200);
-    expect(state.prices).toHaveLength(1000);
-    expect(state.batches).toHaveLength(20);
-    const skip = await importCatalog(
-      await workbookRequest(1000, { action: "import", mapping, mode: "skip" }),
-    );
-    expect(await skip.json()).toMatchObject({
-      imported: 0,
-      skippedExisting: 1000,
-    });
-    const update = await importCatalog(
-      await workbookRequest(1000, {
-        action: "import",
-        mapping,
-        mode: "update",
-      }),
-    );
-    expect(await update.json()).toMatchObject({
-      imported: 1000,
-      updated: 1000,
-    });
-    expect(state.prices).toHaveLength(1000);
+  it(
+    "imports 4000 rows through 100-row requests without processing the whole file in one request",
+    async () => {
+      const { current } = await runSession(4000);
+
+      expect(current).toMatchObject({
+        status: "COMPLETED",
+        processedRows: 4000,
+        importedRows: 4000,
+      });
+      expect(state.prices).toHaveLength(4000);
+      expect(state.batchRequests).toBe(40);
+      expect(state.batches).toHaveLength(80);
+      expect(state.batches.every((operations) => operations <= 100)).toBe(true);
+      expect(state.suppliers).toHaveLength(1);
+      expect(state.components).toHaveLength(4000);
+    },
+    15000,
+  );
+  it("resumes after a failed batch and retrying a completed batch is idempotent", async () => {
     await importCatalog(
-      await workbookRequest(1000, {
-        action: "import",
-        mapping,
-        mode: "revision",
-        revisionDate: "2026-02-01T00:00:00.000Z",
-      }),
+      await stagedRequest(300, { action: "validate", mapping }),
     );
-    expect(state.prices).toHaveLength(2000);
+    const started = await (
+      await startImport(
+        new NextRequest("http://localhost/api/pricing/import/start", {
+          method: "POST",
+          body: JSON.stringify({ uploadId: "session-1" }),
+        }),
+      )
+    ).json();
+    const firstResponse = await importBatch(
+      new NextRequest("http://localhost/batch", {
+        method: "POST",
+        body: JSON.stringify({ offset: started.currentOffset, limit: 100 }),
+      }),
+      context,
+    );
+    const first = await firstResponse.json();
+    expect(first.currentOffset).toBe(100);
+    const retry = await importBatch(
+      new NextRequest("http://localhost/batch", {
+        method: "POST",
+        body: JSON.stringify({ offset: 0, limit: 100 }),
+      }),
+      context,
+    );
+    expect((await retry.json()).currentOffset).toBe(100);
+    expect(state.prices).toHaveLength(100);
+    state.failBatch = state.batches.length + 1;
+    const failed = await importBatch(
+      new NextRequest("http://localhost/batch", {
+        method: "POST",
+        body: JSON.stringify({ offset: 100, limit: 100 }),
+      }),
+      context,
+    );
+    expect(await failed.json()).toMatchObject({
+      status: "FAILED",
+      currentOffset: 100,
+    });
+    state.failBatch = 0;
+    let current = await (
+      await startImport(
+        new NextRequest("http://localhost/start", {
+          method: "POST",
+          body: JSON.stringify({ uploadId: "session-1" }),
+        }),
+      )
+    ).json();
+    while (current.status !== "COMPLETED") {
+      const response = await importBatch(
+        new NextRequest("http://localhost/batch", {
+          method: "POST",
+          body: JSON.stringify({ offset: current.currentOffset, limit: 100 }),
+        }),
+        context,
+      );
+      current = await response.json();
+    }
+    expect(current).toMatchObject({ status: "COMPLETED", processedRows: 300 });
+    expect(state.prices).toHaveLength(300);
+  });
+  it("cancels a persisted import session", async () => {
     await importCatalog(
-      await workbookRequest(1000, {
-        action: "import",
-        mapping,
-        mode: "revision",
-        revisionDate: "2026-02-01T00:00:00.000Z",
-      }),
+      await stagedRequest(300, { action: "validate", mapping }),
     );
-    expect(state.prices).toHaveLength(2000);
-    expect(state.suppliers).toHaveLength(1);
-    expect(state.components).toHaveLength(1000);
+    const response = await cancelImport(
+      new NextRequest("http://localhost/cancel"),
+      context,
+    );
+    expect(await response.json()).toMatchObject({
+      status: "CANCELLED",
+      currentOffset: 0,
+    });
+    const status = await importStatus(
+      new NextRequest("http://localhost/status"),
+      context,
+    );
+    expect(await status.json()).toMatchObject({ status: "CANCELLED" });
   });
   it("blocks unauthorized uploads before workbook processing", async () => {
     state.deny = true;
@@ -301,9 +484,7 @@ describe("price catalog", () => {
     ]);
   });
   it("makes imported prices available to the existing BOQ Auto Price API", async () => {
-    await importCatalog(
-      await workbookRequest(1, { action: "import", mapping }),
-    );
+    await runSession(1);
     const response = await autoPrice(
       new NextRequest("http://localhost/api/boq/test/apply-prices", {
         method: "POST",

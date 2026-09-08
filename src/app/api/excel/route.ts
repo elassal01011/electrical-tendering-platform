@@ -129,7 +129,7 @@ export async function POST(req: NextRequest) {
         uploadId,
         rowCount: normalized.rows.length,
         message:
-          "Selected sheet saved in temporary staging. Download JSON to retain it beyond the upload expiry. Business records have not been changed.",
+          "Excel data is ready for import. No business records have been changed yet.",
       });
     }
     if (input.action === "export") return NextResponse.json(data);
