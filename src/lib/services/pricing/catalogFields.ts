@@ -1,0 +1,16 @@
+export const CATALOG_FIELDS = [
+  "supplier",
+  "supplierSku",
+  "manufacturer",
+  "partNumber",
+  "description",
+  "price",
+  "currency",
+  "validFrom",
+  "validTo",
+  "status",
+  "unit",
+  "discount",
+  "netPrice",
+  "listPrice",
+] as const;

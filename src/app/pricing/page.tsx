@@ -1,510 +1,399 @@
 "use client";
-
 import { useEffect, useState } from "react";
-
-type Supplier = { id: string; companyName: string };
-type Component = {
-  id: string;
-  manufacturer: string;
-  partNumber: string;
-  description: string;
-  category?: string;
-  listPrice: string | null;
-  listPriceCurrency: string;
-};
-type PriceRow = {
-  id: string;
-  price: string;
-  currency: string;
-  effectiveFrom: string;
-  effectiveTo: string | null;
-  active: boolean;
-  supplierPartNumber?: string | null;
-  unit?: string;
-  source?: string | null;
-  supplier: Supplier;
-  component: Component;
-};
-type ImportSummary = {
-  existingSuppliers: number;
-  newSuppliers: number;
-  existingComponents: number;
-  newComponents: number;
-  newPrices: number;
-  updatedPrices: number;
-};
-type ImportResult = {
-  created: number;
-  updated: number;
-  rejected: number;
-  errors: { row: number; field?: string; message: string }[];
-  summary?: ImportSummary;
-};
-
+import { useSession } from "next-auth/react";
+import { hasPermission } from "@/lib/auth/permissions";
+import { requestJson } from "@/lib/client/request";
+import { CatalogUpload } from "@/components/pricing/CatalogUpload";
+const blank = () => ({
+  supplier: "Unspecified catalog supplier",
+  supplierPartNumber: "",
+  manufacturer: "Unspecified",
+  partNumber: "",
+  description: "",
+  price: "",
+  currency: "EGP",
+  effectiveFrom: new Date().toISOString().slice(0, 10),
+  effectiveTo: "",
+  active: true,
+});
 export default function PricingPage() {
-  const [rows, setRows] = useState<PriceRow[]>([]);
-  const [suppliers, setSuppliers] = useState<Supplier[]>([]);
-  const [components, setComponents] = useState<Component[]>([]);
-  const [supplierId, setSupplierId] = useState("");
-  const [componentId, setComponentId] = useState("");
-  const [price, setPrice] = useState("");
-  const [currency, setCurrency] = useState("EGP");
-  const [search, setSearch] = useState("");
-  const [filterSupplier, setFilterSupplier] = useState("");
-  const [filterCategory, setFilterCategory] = useState("");
-  const [filterActive, setFilterActive] = useState("true");
-  const [sort, setSort] = useState("date");
-  const [importMode, setImportMode] = useState<"append" | "update" | "replace">(
-    "append",
-  );
-  const [importResult, setImportResult] = useState<ImportResult | null>(null);
-  const [pendingImport, setPendingImport] = useState<{
-    file: File;
-    mode: "append" | "update" | "replace";
-    summary: ImportSummary;
-  } | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [message, setMessage] = useState("");
-
+  const { data: session } = useSession();
+  const can = (permission: string) =>
+    hasPermission(session?.user.roles ?? [], permission);
+  const [data, setData] = useState<any>({ rows: [], total: 0, summary: {} });
+  const [filters, setFilters] = useState({
+    q: "",
+    supplier: "",
+    manufacturer: "",
+    currency: "",
+    active: "",
+    validity: "",
+    min: "",
+    max: "",
+  });
+  const [page, setPage] = useState(1),
+    [upload, setUpload] = useState(false),
+    [form, setForm] = useState<any>(null);
+  const [busy, setBusy] = useState(false),
+    [message, setMessage] = useState(""),
+    [review, setReview] = useState<number | null>(null);
   async function load() {
-    const res = await fetch(
-      `/api/pricing?q=${encodeURIComponent(search)}&supplierId=${filterSupplier}&category=${filterCategory}&active=${filterActive}&sort=${sort}`,
-    );
-    const data = await res
-      .json()
-      .catch(() => ({ error: "The server returned an invalid response." }));
-    if (!res.ok) {
-      setMessage(data.error ?? "Unable to load pricing.");
-      return;
+    try {
+      setData(
+        await requestJson(
+          "/api/pricing/catalog?" +
+            new URLSearchParams({ ...filters, page: String(page) }),
+        ),
+      );
+    } catch (e) {
+      setMessage((e as Error).message);
     }
-    setRows(data.rows ?? []);
-    setSuppliers(data.suppliers ?? []);
-    setComponents(data.components ?? []);
-    if (!supplierId && data.suppliers?.[0]) setSupplierId(data.suppliers[0].id);
-    if (!componentId && data.components?.[0])
-      setComponentId(data.components[0].id);
   }
-
   useEffect(() => {
-    load();
-  }, [search, filterSupplier, filterCategory, filterActive, sort]);
-
-  async function addPrice() {
+    void load();
+  }, [filters, page]);
+  async function save(e: React.FormEvent) {
+    e.preventDefault();
     setBusy(true);
     setMessage("");
     try {
-      const res = await fetch("/api/pricing", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
+      await requestJson("/api/pricing/catalog", {
+        method: form.id ? "PUT" : "POST",
         body: JSON.stringify({
-          supplierId,
-          componentId,
-          price: Number(price),
-          currency,
+          ...form,
+          supplierPartNumber: form.supplierPartNumber || null,
+          price: Number(form.price),
+          effectiveFrom: new Date(form.effectiveFrom).toISOString(),
+          effectiveTo: form.effectiveTo
+            ? new Date(form.effectiveTo).toISOString()
+            : null,
         }),
       });
-      const data = await res
-        .json()
-        .catch(() => ({ error: "The server returned an invalid response." }));
-      if (!res.ok)
-        throw new Error(
-          data.error ? JSON.stringify(data.error) : "Unable to add price",
-        );
-      setPrice("");
-      setMessage("Price added successfully.");
+      setForm(null);
+      setMessage("Price saved.");
       await load();
-    } catch (e: any) {
-      setMessage(e.message);
+    } catch (e) {
+      setMessage((e as Error).message);
     } finally {
       setBusy(false);
     }
   }
-
-  async function deletePrice(id: string) {
+  async function remove(id: string, hard: boolean) {
     if (
       !confirm(
-        "Deactivate this supplier price? Historical data will be retained.",
+        hard
+          ? "Permanently delete this price?"
+          : "Deactivate this price and preserve its history?",
       )
     )
       return;
     setBusy(true);
     try {
-      await fetch(`/api/pricing?id=${id}`, { method: "DELETE" });
-      await load();
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function importExcel(
-    file: File | null,
-    mode: "append" | "update" | "replace" = "append",
-    confirmImport = false,
-  ) {
-    if (!file) return;
-    if (
-      mode === "replace" &&
-      !confirm(
-        "Replace active prices? Existing records will be retained as inactive history.",
-      )
-    )
-      return;
-    setBusy(true);
-    setMessage("");
-    setImportResult(null);
-    try {
-      const fd = new FormData();
-      fd.append("file", file);
-      fd.append("mode", mode);
-      if (mode === "replace") fd.append("confirmReplace", "true");
-      if (!confirmImport) fd.append("dryRun", "true");
-      const res = await fetch("/api/pricing", { method: "PATCH", body: fd });
-      const data = await res
-        .json()
-        .catch(() => ({ error: "The server returned an invalid response." }));
-      setImportResult({
-        created: data.created ?? 0,
-        updated: data.updated ?? 0,
-        rejected: data.rejected ?? data.errors?.length ?? 0,
-        errors: data.errors ?? data.details ?? [],
-        summary: data.summary,
+      await requestJson(`/api/pricing/catalog?id=${id}&delete=${hard}`, {
+        method: "DELETE",
       });
-      if (!res.ok) throw new Error(data.error ?? "Import failed");
-      if (!confirmImport && data.preview) {
-        setPendingImport({ file, mode, summary: data.summary });
-        setMessage(
-          "Import analyzed. Review the detected records, then confirm.",
-        );
-        return;
-      }
-      setPendingImport(null);
-      setMessage(
-        data.message ?? `Imported ${data.created ?? 0} price records.`,
-      );
       await load();
-    } catch (e: any) {
-      setMessage(e.message);
+    } catch (e) {
+      setMessage((e as Error).message);
     } finally {
       setBusy(false);
     }
   }
-
-  function exportCsv() {
-    const header = [
-      "Supplier",
-      "Supplier Part Number",
-      "Manufacturer",
-      "Part Number",
-      "Description",
-      "Unit",
-      "Currency",
-      "Unit Price",
-      "Effective From",
-      "Effective To",
-      "Active",
-      "Source",
-    ];
-    const csv = [
-      header,
-      ...rows.map((r) => [
-        r.supplier.companyName,
-        r.supplierPartNumber ?? "",
-        r.component.manufacturer,
-        r.component.partNumber,
-        r.component.description,
-        r.unit ?? "NO",
-        r.currency,
-        r.price,
-        r.effectiveFrom,
-        r.effectiveTo ?? "",
-        r.active ? "true" : "false",
-        r.source ?? "",
-      ]),
-    ]
-      .map((line) =>
-        line.map((v) => `"${String(v).replaceAll('"', '""')}"`).join(","),
-      )
-      .join("\n");
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
-    a.download = "pricing-list.csv";
-    a.click();
-    URL.revokeObjectURL(a.href);
-  }
-
+  const filter = (name: string, value: string) => {
+    setFilters((current) => ({ ...current, [name]: value }));
+    setPage(1);
+  };
   return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-xl font-semibold">Supplier Pricing</h1>
-        <p className="mt-1 text-sm text-slate-400">
-          Maintain supplier price lists and make them available to BOQ pricing.
-        </p>
-      </div>
-
-      <div className="grid gap-4 lg:grid-cols-2">
-        <div className="card space-y-3">
-          <h2 className="text-sm font-semibold">Add Supplier Price</h2>
-          <select
-            className="input"
-            value={supplierId}
-            onChange={(e) => setSupplierId(e.target.value)}
-          >
-            {suppliers.map((s) => (
-              <option key={s.id} value={s.id}>
-                {s.companyName}
-              </option>
-            ))}
-          </select>
-          <select
-            className="input"
-            value={componentId}
-            onChange={(e) => setComponentId(e.target.value)}
-          >
-            {components.map((c) => (
-              <option key={c.id} value={c.id}>
-                {c.manufacturer} — {c.partNumber}
-              </option>
-            ))}
-          </select>
-          <div className="grid grid-cols-2 gap-2">
-            <input
-              className="input"
-              placeholder="Price"
-              value={price}
-              onChange={(e) => setPrice(e.target.value)}
-              type="number"
-              min="0"
-              step="0.01"
-            />
-            <input
-              className="input"
-              placeholder="Currency"
-              value={currency}
-              onChange={(e) => setCurrency(e.target.value.toUpperCase())}
-            />
-          </div>
-          <button
-            className="btn-primary"
-            onClick={addPrice}
-            disabled={busy || !supplierId || !componentId || !price}
-          >
-            Add Price
-          </button>
-        </div>
-
-        <div className="card space-y-3">
-          <h2 className="text-sm font-semibold">Import Price List</h2>
-          <p className="text-xs text-slate-400">
-            Required: Supplier, Manufacturer, Part Number, Unit Price. Optional:
-            Supplier Part Number, Description, Unit, Currency, Effective
-            From/To, Source, Active.
+    <div className="space-y-5">
+      <div className="flex justify-between flex-wrap gap-3">
+        <div>
+          <h1 className="text-xl font-semibold">Price Catalog</h1>
+          <p className="muted">
+            Manage prices for BOQ pricing, supplier comparison and quotations.
           </p>
-          <div className="flex flex-wrap gap-2">
-            <select
-              className="input"
-              value={importMode}
-              onChange={(e) =>
-                setImportMode(e.target.value as typeof importMode)
-              }
-            >
-              <option value="append">Add new history</option>
-              <option value="update">Update matching effective date</option>
-              <option value="replace">Replace active prices</option>
-            </select>
-            <label className="btn-primary inline-block w-fit cursor-pointer">
-              Import XLSX
-              <input
-                className="hidden"
-                type="file"
-                accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        </div>
+        {can("pricing.edit") && (
+          <div className="flex gap-2">
+            <button className="btn-primary" onClick={() => setForm(blank())}>
+              + Add Price Manually
+            </button>
+            <button className="btn-secondary" onClick={() => setUpload(true)}>
+              Upload Price Catalog
+            </button>
+          </div>
+        )}
+      </div>
+      <div className="grid gap-3 md:grid-cols-6">
+        {Object.entries({
+          "Total Prices": data.summary.totalPrices,
+          "Active Prices": data.summary.activePrices,
+          Suppliers: data.summary.suppliers,
+          Manufacturers: data.summary.manufacturers,
+          "Expired Prices": data.summary.expiredPrices,
+          "Needs Review (last upload)": review,
+        }).map(([label, value]) => (
+          <div className="card" key={label}>
+            <p className="muted text-sm">{label}</p>
+            <strong>{value == null ? "�" : String(value)}</strong>
+          </div>
+        ))}
+      </div>
+      {message && (
+        <p role="status" className="card">
+          {message}
+        </p>
+      )}
+      {upload && can("pricing.edit") && (
+        <CatalogUpload
+          close={() => setUpload(false)}
+          completed={(count) => {
+            setReview(count);
+            void load();
+          }}
+        />
+      )}
+      {form && can("pricing.edit") && (
+        <form className="card space-y-3" onSubmit={save}>
+          <h2>{form.id ? "Edit Price" : "Add Price Manually"}</h2>
+          <div className="grid md:grid-cols-3 gap-3">
+            {[
+              ["supplier", "Supplier", "text"],
+              ["supplierPartNumber", "Supplier SKU", "text"],
+              ["manufacturer", "Manufacturer", "text"],
+              ["partNumber", "Part Number", "text"],
+              ["description", "Description", "text"],
+              ["price", "Price *", "number"],
+              ["currency", "Currency *", "text"],
+              ["effectiveFrom", "Valid From", "date"],
+              ["effectiveTo", "Valid To", "date"],
+            ].map(([field, label, type]) => (
+              <label key={field}>
+                {label}
+                <input
+                  className="input"
+                  type={type}
+                  step={type === "number" ? "0.01" : undefined}
+                  min={type === "number" ? "0" : undefined}
+                  required={["price", "currency", "effectiveFrom"].includes(
+                    field,
+                  )}
+                  value={form[field]}
+                  onChange={(e) =>
+                    setForm({
+                      ...form,
+                      [field]:
+                        field === "currency"
+                          ? e.target.value.toUpperCase()
+                          : e.target.value,
+                    })
+                  }
+                />
+              </label>
+            ))}
+            <label>
+              Status
+              <select
+                className="input"
+                value={String(form.active)}
                 onChange={(e) =>
-                  importExcel(e.target.files?.[0] ?? null, importMode)
+                  setForm({ ...form, active: e.target.value === "true" })
                 }
+              >
+                <option value="true">Active</option>
+                <option value="false">Inactive</option>
+              </select>
+            </label>
+          </div>
+          <button className="btn-primary" disabled={busy}>
+            Save Price
+          </button>
+          <button
+            type="button"
+            className="btn-secondary"
+            onClick={() => setForm(null)}
+          >
+            Cancel
+          </button>
+        </form>
+      )}
+      <section className="card space-y-3">
+        <div className="grid md:grid-cols-4 gap-3">
+          {[
+            ["q", "Search Part Number / Description / SKU"],
+            ["supplier", "Supplier"],
+            ["manufacturer", "Manufacturer"],
+            ["currency", "Currency"],
+            ["min", "Minimum Price"],
+            ["max", "Maximum Price"],
+          ].map(([field, label]) => (
+            <label key={field}>
+              {label}
+              <input
+                className="input"
+                placeholder={label}
+                value={filters[field as keyof typeof filters]}
+                onChange={(e) => filter(field, e.target.value)}
               />
             </label>
-            <a
-              className="btn-secondary inline-block"
-              href="/api/pricing/template"
-            >
-              Download Pricing Import Template.xlsx
-            </a>
-          </div>
-          <div className="rounded border border-slate-800 bg-slate-950 p-3 text-xs text-slate-400">
-            Excel files are analyzed before import. New suppliers and components
-            are recognized and created transactionally; price history is
-            retained. Replacement asks for confirmation and deactivates old
-            prices without deleting history.
-          </div>
-        </div>
-      </div>
-
-      {message && <div className="card text-sm text-slate-300">{message}</div>}
-      {importResult && (
-        <div className="card text-sm">
-          <div className="text-slate-200">
-            Created: {importResult.created} · Updated: {importResult.updated} ·
-            Rejected: {importResult.rejected}
-          </div>
-          {importResult.summary && (
-            <div className="mt-2 grid gap-1 text-slate-300 sm:grid-cols-2">
-              <span>
-                Suppliers: {importResult.summary.existingSuppliers} recognized ·{" "}
-                {importResult.summary.newSuppliers} new
-              </span>
-              <span>
-                Components: {importResult.summary.existingComponents} matched ·{" "}
-                {importResult.summary.newComponents} new
-              </span>
-              <span>
-                Prices: {importResult.summary.newPrices} new ·{" "}
-                {importResult.summary.updatedPrices} updated
-              </span>
-            </div>
-          )}
-          {pendingImport && (
-            <button
-              className="btn-primary mt-3"
-              disabled={busy}
-              onClick={() =>
-                importExcel(pendingImport.file, pendingImport.mode, true)
-              }
-            >
-              Confirm import
-            </button>
-          )}
-          {importResult.errors.length > 0 && (
-            <ul className="mt-2 list-disc pl-5 text-red-300">
-              {importResult.errors.map((e, i) => (
-                <li key={i}>
-                  Row {e.row}
-                  {e.field ? ` (${e.field})` : ""}: {e.message}
-                </li>
-              ))}
-            </ul>
-          )}
-          <button
-            className="mt-2 text-xs underline"
-            onClick={() => {
-              setImportResult(null);
-              setPendingImport(null);
-            }}
-          >
-            Clear validation errors
-          </button>
-        </div>
-      )}
-
-      <div className="card space-y-3">
-        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-          <h2 className="text-sm font-semibold">Current Supplier Prices</h2>
-          <div className="flex flex-wrap gap-2">
-            <input
-              className="input sm:max-w-xs"
-              placeholder="Search supplier / part number"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-            />
+          ))}
+          <label>
+            Status
             <select
               className="input"
-              value={filterSupplier}
-              onChange={(e) => setFilterSupplier(e.target.value)}
+              value={filters.active}
+              onChange={(e) => filter("active", e.target.value)}
             >
-              <option value="">All suppliers</option>
-              {suppliers.map((s) => (
-                <option key={s.id} value={s.id}>
-                  {s.companyName}
-                </option>
-              ))}
-            </select>
-            <select
-              className="input"
-              value={filterCategory}
-              onChange={(e) => setFilterCategory(e.target.value)}
-            >
-              <option value="">All categories</option>
-              {[
-                ...new Set(
-                  components.map((c) => (c as any).category).filter(Boolean),
-                ),
-              ].map((c) => (
-                <option key={c}>{c}</option>
-              ))}
-            </select>
-            <select
-              className="input"
-              value={filterActive}
-              onChange={(e) => setFilterActive(e.target.value)}
-            >
+              <option value="">All</option>
               <option value="true">Active</option>
               <option value="false">Inactive</option>
-              <option value="">All statuses</option>
             </select>
+          </label>
+          <label>
+            Validity
             <select
               className="input"
-              value={sort}
-              onChange={(e) => setSort(e.target.value)}
+              value={filters.validity}
+              onChange={(e) => filter("validity", e.target.value)}
             >
-              <option value="date">Newest date</option>
-              <option value="price">Price</option>
-              <option value="supplier">Supplier</option>
+              <option value="">All</option>
+              <option value="valid">Valid</option>
+              <option value="expired">Expired</option>
             </select>
-            <button className="btn-primary" onClick={exportCsv}>
-              Export CSV
-            </button>
-          </div>
+          </label>
         </div>
         <div className="overflow-x-auto">
-          <table className="data-table w-full">
+          <table className="data-table">
             <thead>
               <tr>
-                <th>Supplier</th>
-                <th>Supplier SKU</th>
-                <th>Manufacturer</th>
-                <th>Part Number</th>
-                <th>Price</th>
-                <th>Currency</th>
-                <th>Valid From</th>
-                <th>Status</th>
-                <th></th>
+                {[
+                  "Supplier",
+                  "Supplier SKU",
+                  "Manufacturer",
+                  "Part Number",
+                  "Description",
+                  "Price",
+                  "Currency",
+                  "Valid From",
+                  "Valid To",
+                  "Status",
+                  "Actions",
+                ].map((label) => (
+                  <th key={label}>{label}</th>
+                ))}
               </tr>
             </thead>
             <tbody>
-              {rows.map((r) => (
-                <tr key={r.id}>
-                  <td>{r.supplier.companyName}</td>
-                  <td>{r.supplierPartNumber ?? "-"}</td>
-                  <td>{r.component.manufacturer}</td>
-                  <td>{r.component.partNumber}</td>
+              {data.rows.map((row: any) => (
+                <tr key={row.id}>
+                  <td>{row.supplier.companyName}</td>
+                  <td>{row.supplierPartNumber}</td>
+                  <td>{row.component.manufacturer}</td>
+                  <td>{row.component.partNumber}</td>
+                  <td>{row.component.description}</td>
+                  <td>{Number(row.price).toLocaleString()}</td>
+                  <td>{row.currency}</td>
+                  <td>{row.effectiveFrom.slice(0, 10)}</td>
+                  <td>{row.effectiveTo?.slice(0, 10) || "�"}</td>
+                  <td>{row.active ? "Active" : "Inactive"}</td>
                   <td>
-                    {Number(r.price).toLocaleString(undefined, {
-                      minimumFractionDigits: 2,
-                      maximumFractionDigits: 2,
-                    })}
-                  </td>
-                  <td>{r.currency}</td>
-                  <td>{new Date(r.effectiveFrom).toLocaleDateString()}</td>
-                  <td>{r.active ? "Active" : "Inactive"}</td>
-                  <td>
-                    {r.active && (
-                      <button
-                        className="text-red-300 underline"
-                        onClick={() => deletePrice(r.id)}
-                      >
-                        Deactivate
-                      </button>
-                    )}
+                    <div className="flex gap-2">
+                      {can("pricing.edit") && (
+                        <>
+                          <button
+                            className="btn-secondary"
+                            disabled={busy}
+                            onClick={() =>
+                              setForm({
+                                id: row.id,
+                                ...blank(),
+                                supplier: row.supplier.companyName,
+                                supplierPartNumber:
+                                  row.supplierPartNumber || "",
+                                manufacturer: row.component.manufacturer,
+                                partNumber: row.component.partNumber,
+                                description: row.component.description,
+                                price: String(row.price),
+                                currency: row.currency,
+                                effectiveFrom: row.effectiveFrom.slice(0, 10),
+                                effectiveTo:
+                                  row.effectiveTo?.slice(0, 10) || "",
+                                active: row.active,
+                              })
+                            }
+                          >
+                            Edit
+                          </button>
+                          <button
+                            className="btn-secondary"
+                            disabled={busy || !row.active}
+                            onClick={() => void remove(row.id, false)}
+                          >
+                            Deactivate
+                          </button>
+                        </>
+                      )}
+                      {can("pricing.delete") && (
+                        <button
+                          className="btn-secondary"
+                          disabled={busy}
+                          onClick={() => void remove(row.id, true)}
+                        >
+                          Delete
+                        </button>
+                      )}
+                    </div>
                   </td>
                 </tr>
               ))}
             </tbody>
           </table>
-          {!rows.length && (
-            <p className="py-6 text-center text-sm text-slate-500">
-              No supplier prices yet. Add one or import an Excel price list.
-            </p>
-          )}
         </div>
-      </div>
+        {!data.rows.length && (
+          <div className="text-center py-5">
+            <p>
+              {data.summary.totalPrices
+                ? "No prices match these filters."
+                : "No price catalog entries yet."}
+            </p>
+            {can("pricing.edit") && (
+              <div className="flex justify-center gap-2 mt-3">
+                <button
+                  className="btn-primary"
+                  onClick={() => setForm(blank())}
+                >
+                  Add Price Manually
+                </button>
+                <button
+                  className="btn-secondary"
+                  onClick={() => setUpload(true)}
+                >
+                  Upload Excel
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+        <div className="flex gap-3">
+          <button
+            className="btn-secondary"
+            disabled={page <= 1}
+            onClick={() => setPage(page - 1)}
+          >
+            Previous
+          </button>
+          <span>
+            Page {page} of {Math.max(1, Math.ceil(data.total / 100))} �{" "}
+            {data.total} prices
+          </span>
+          <button
+            className="btn-secondary"
+            disabled={page * 100 >= data.total}
+            onClick={() => setPage(page + 1)}
+          >
+            Next
+          </button>
+        </div>
+      </section>
     </div>
   );
 }

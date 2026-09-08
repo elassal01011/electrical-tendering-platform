@@ -11,6 +11,7 @@ export type PricingProgress = {
   updated: number;
 };
 export type StagedPrice = {
+  targetPriceId?: string;
   supplierId: string | null;
   componentId: string | null;
   supplierKey: string;
@@ -82,6 +83,7 @@ export async function writePricingImport(
         tags: ["IMPORTED"],
       });
     return {
+      ...(item.targetPriceId ? { id: item.targetPriceId } : {}),
       supplierId,
       componentId,
       supplierPartNumber: item.supplierPartNumber || item.partNumber || null,
@@ -150,7 +152,8 @@ export async function writePricingImport(
     progress.stage = `write-prices:${offset / PRICING_BATCH_SIZE + 1}`;
     const batch = prepared.slice(offset, offset + PRICING_BATCH_SIZE);
     const operations = batch.flatMap((data) => {
-      const id = existing.get(key(data)) ?? importId("price", key(data));
+      const id =
+        data.id ?? existing.get(key(data)) ?? importId("price", key(data));
       incomingIds.push(id);
       return [
         db.supplierPrice.updateMany({
@@ -179,7 +182,9 @@ export async function writePricingImport(
     });
     await db.$transaction(operations);
     progress.imported += batch.length;
-    progress.updated += batch.filter((data) => existing.has(key(data))).length;
+    progress.updated += batch.filter(
+      (data) => data.id || existing.has(key(data)),
+    ).length;
     progress.created = progress.imported - progress.updated;
   }
   if (mode === "replace") {
